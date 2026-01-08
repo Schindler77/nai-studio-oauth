@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NAI Image Studio - 로그인 완료</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .card {
+      background: white;
+      border-radius: 16px;
+      padding: 40px;
+      text-align: center;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+      max-width: 400px;
+    }
+    .icon {
+      font-size: 64px;
+      margin-bottom: 20px;
+    }
+    h1 {
+      color: #333;
+      font-size: 24px;
+      margin-bottom: 12px;
+    }
+    p {
+      color: #666;
+      font-size: 14px;
+      line-height: 1.6;
+    }
+    .success { color: #10b981; }
+    .error { color: #ef4444; }
+    .spinner {
+      width: 40px;
+      height: 40px;
+      border: 4px solid #e5e7eb;
+      border-top-color: #667eea;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin: 20px auto;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+  </style>
+</head>
+<body>
+  <div class="card" id="card">
+    <div class="spinner"></div>
+    <h1>로그인 처리 중...</h1>
+    <p>잠시만 기다려주세요.</p>
+  </div>
+
+  <script>
+    (function() {
+      const card = document.getElementById('card');
+      const params = new URLSearchParams(window.location.search);
+      const code = params.get('code');
+      const error = params.get('error');
+
+      function showSuccess() {
+        card.innerHTML = `
+          <div class="icon">✅</div>
+          <h1 class="success">로그인 완료!</h1>
+          <p>이 창은 자동으로 닫힙니다.<br>닫히지 않으면 수동으로 닫아주세요.</p>
+        `;
+        setTimeout(() => window.close(), 1500);
+      }
+
+      function showError(msg) {
+        card.innerHTML = `
+          <div class="icon">❌</div>
+          <h1 class="error">로그인 실패</h1>
+          <p>${msg}<br><br>이 창을 닫고 다시 시도해주세요.</p>
+        `;
+      }
+
+      // 에러 체크
+      if (error) {
+        showError('Google 로그인이 취소되었거나 오류가 발생했습니다.');
+        return;
+      }
+
+      // 코드 체크
+      if (!code) {
+        showError('인증 코드를 받지 못했습니다.');
+        return;
+      }
+
+      // 부모 창에 메시지 전송
+      if (window.opener) {
+        try {
+          window.opener.postMessage({
+            type: 'NAI_STUDIO_GOOGLE_AUTH',
+            code: code
+          }, '*');
+          showSuccess();
+        } catch (e) {
+          showError('부모 창과 통신할 수 없습니다.');
+        }
+      } else {
+        // 팝업이 아닌 경우 (직접 접속) - 코드 표시
+        card.innerHTML = `
+          <div class="icon">🔑</div>
+          <h1>인증 코드</h1>
+          <p style="margin-bottom: 16px;">아래 코드를 NAI Image Studio에 붙여넣으세요:</p>
+          <textarea id="codeBox" readonly style="width: 100%; height: 80px; padding: 12px; border: 2px solid #667eea; border-radius: 8px; font-family: monospace; font-size: 12px; resize: none;">${code}</textarea>
+          <button onclick="navigator.clipboard.writeText('${code}').then(() => this.textContent = '✅ 복사됨!')" style="margin-top: 12px; padding: 12px 24px; background: #667eea; color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 14px;">📋 코드 복사</button>
+        `;
+      }
+    })();
+  </script>
+</body>
+</html>
