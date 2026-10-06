@@ -13,6 +13,7 @@ from PySide6.QtWidgets import QApplication, QInputDialog, QMessageBox
 from scene_organizer import i18n
 from scene_organizer import mainwindow as mw_mod
 from scene_organizer.mainwindow import MainWindow
+from scene_organizer.model import TITLE_H
 from scene_organizer.viewer import ImageViewer
 
 
@@ -323,7 +324,7 @@ def test_region_and_canvas_interactions(win, tmp_path):
     # rubber band inside the region selects images
     win.canvas.clear_selection()
     r = win.canvas.region_items[reg.id].sceneBoundingRect()
-    a = win.canvas.mapFromScene(r.topLeft() + QPointF(4, 34))
+    a = win.canvas.mapFromScene(r.topLeft() + QPointF(14, TITLE_H + 14))
     b = win.canvas.mapFromScene(r.bottomRight() - QPointF(4, 4))
     send_mouse(vp, QMouseEvent.MouseButtonPress, a)
     send_mouse(vp, QMouseEvent.MouseMove, b, Qt.NoButton, Qt.LeftButton)
@@ -503,7 +504,8 @@ def test_korean_ui_is_complete(qapp, tmp_path, monkeypatch):
     w.canvas_menu(QPoint(0, 0), QPointF(0, 0))
     for m in menus:
         _menu_texts(m, texts)
-    allowed = {"English", "한국어", reg.name}  # language names, user content
+    from scene_organizer.model import ASPECTS
+    allowed = {"English", "한국어", reg.name, *ASPECTS}  # language names, user content, ratios
     untranslated = sorted({t for t in texts if t and t not in allowed and not _has_hangul(t)
                            and not t.endswith(".isproj")})  # recent-project paths
     assert not untranslated, untranslated
@@ -516,3 +518,50 @@ def test_korean_ui_is_complete(qapp, tmp_path, monkeypatch):
     w.dirty = False
     w.close()
     shutil.rmtree(w.data_dir, ignore_errors=True)
+
+
+def test_card_header_switch_menu_and_appearance(win, tmp_path, monkeypatch):
+    from scene_organizer import theme
+    make_images(str(tmp_path / "p"), 3, size=(400, 600))  # portrait, like NovelAI output
+    win.new_region()
+    reg = win.project.regions[0]
+    win.import_paths([str(tmp_path / "p")])
+    assert win.project.thumb_aspect == "2:3"  # picked from the first import
+    cw, ch = win.project.cell()
+    assert cw < ch
+    win.canvas.fit_rect(win._region_display_rect(reg))
+    pump()
+    ri = win.canvas.region_items[reg.id]
+    vp = win.canvas.viewport()
+    # click the auto-arrange switch in the header
+    sw = win.canvas.mapFromScene(ri.mapToScene(ri.r_switch.center()))
+    send_mouse(vp, QMouseEvent.MouseButtonPress, sw)
+    send_mouse(vp, QMouseEvent.MouseButtonRelease, sw, Qt.LeftButton, Qt.NoButton)
+    assert win.project.regions[0].auto_arrange is False
+    ri = win.canvas.region_items[reg.id]
+    sw = win.canvas.mapFromScene(ri.mapToScene(ri.r_switch.center()))
+    send_mouse(vp, QMouseEvent.MouseButtonPress, sw)
+    send_mouse(vp, QMouseEvent.MouseButtonRelease, sw, Qt.LeftButton, Qt.NoButton)
+    assert win.project.regions[0].auto_arrange is True
+    # the ⋯ button opens the region menu
+    opened = []
+    monkeypatch.setattr(mw_mod, "exec_menu", lambda m, pos: opened.append(m))
+    menu_pt = win.canvas.mapFromScene(ri.mapToScene(ri.r_menu.center()))
+    send_mouse(vp, QMouseEvent.MouseButtonPress, menu_pt)
+    send_mouse(vp, QMouseEvent.MouseButtonRelease, menu_pt, Qt.LeftButton, Qt.NoButton)
+    assert len(opened) == 1 and win.canvas.mode is None
+    # thumbnail shape / fill and theme switch repaint without errors
+    win.set_thumb_aspect("16:9")
+    assert win.project.cell()[0] > win.project.cell()[1]
+    win.set_thumb_fill("fit")
+    win.set_ui_theme("dark")
+    assert theme.current().name == "dark"
+    win.grab()
+    win.set_ui_theme("light")
+    win.grab()
+    # combined lock / unlock toolbar command
+    win.canvas.set_selection([r.id for r in reg.images[:2]])
+    win.toggle_lock_selection()
+    assert [r.locked for r in win.project.regions[0].images] == [True, True, False]
+    win.toggle_lock_selection()
+    assert not any(r.locked for r in win.project.regions[0].images)

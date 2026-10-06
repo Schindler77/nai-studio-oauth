@@ -231,10 +231,19 @@ KO: dict[str, str] = {
         "휠 = 확대/축소   ·   Ctrl+휠 = 썸네일 크기   ·   휠 버튼 드래그 또는 Space+드래그 = 화면 이동",
     # ----------------------------------------------------- canvas drawing
     "missing file": "파일 없음",
-    "AUTO": "자동",
-    "FREE": "자유",
-    "{name}  ({n} images)": "{name}  (이미지 {n}장)",
-    "({n} images)": "(이미지 {n}장)",
+    "{n} images": "{n}장",
+    "Auto-Arrange ON": "자동 정렬 ON",
+    "Auto-Arrange OFF": "자동 정렬 OFF",
+    # ------------------------------------------------------ appearance
+    "Lock / Unlock": "잠금/해제",
+    "Lock the selected images, or unlock them if they are all locked (Ctrl+L / Ctrl+Shift+L)":
+        "선택한 이미지를 잠그고, 모두 잠겨 있으면 잠금을 풉니다 (Ctrl+L / Ctrl+Shift+L)",
+    "Thumbnail Shape": "썸네일 모양",
+    "Fill the box (crop edges)": "칸 채우기 (가장자리 잘림)",
+    "Show whole image": "이미지 전체 보이기",
+    "Theme": "테마",
+    "Light": "밝게",
+    "Dark": "어둡게",
     "Drop images here, or select this region and use Import": "여기에 이미지를 끌어다 놓거나, 이 영역을 선택하고 가져오기를 쓰세요",
     # ------------------------------------------------------ display names
     "Display Name": "표시 이름",

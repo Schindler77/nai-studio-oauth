@@ -4,13 +4,14 @@ from __future__ import annotations
 
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QBrush, QColor, QPainter, QPen
+from PySide6.QtGui import QBrush, QPainter, QPen
 from PySide6.QtWidgets import (QApplication, QGraphicsRectItem, QGraphicsScene,
                                QGraphicsView)
 
-from .items import ACCENT, RegionItem, ThumbItem
+from . import theme
+from .items import RegionItem, ThumbItem
 from .i18n import tr
-from .model import (PAD, TITLE_H, adjust_insert_index, cell_size, grid_cols,
+from .model import (PAD, TITLE_H, adjust_insert_index, grid_cols,
                     grid_content_height, grid_pos, slot_at)
 
 ZOOM_MIN = 0.04  # open item: canvas zoom limits
@@ -71,9 +72,14 @@ class Canvas(QGraphicsView):
     def show_region_names(self) -> bool:
         return self.ctrl.project.show_region_names
 
+    def label_shown(self) -> bool:
+        return self.ctrl.project.label_shown()
+
+    def thumb_fill(self) -> str:
+        return self.ctrl.project.thumb_fill
+
     def cell(self) -> tuple[int, int]:
-        p = self.ctrl.project
-        return cell_size(p.thumb_size, p.show_labels)
+        return self.ctrl.project.cell()
 
     def zoom(self) -> float:
         return self.transform().m11()
@@ -85,6 +91,7 @@ class Canvas(QGraphicsView):
             self.cancel_drag()
         p = self.ctrl.project
         cw, ch = self.cell()
+        img_h = p.image_box()[1]
         live_refs: set[str] = set()
         live_regions: set[str] = set()
         self._by_path.clear()
@@ -110,7 +117,7 @@ class Canvas(QGraphicsView):
                     ti.setParentItem(ri)
                 ti.setOpacity(1.0)
                 ti.setZValue(0)
-                ti.set_cell(cw, ch)
+                ti.set_cell(cw, ch, img_h)
                 ti.set_data(ref, i, ref.id in self.ctrl.cut_ids)
                 live_refs.add(ref.id)
                 self._by_path.setdefault(ref.path, set()).add(ref.id)
@@ -247,7 +254,8 @@ class Canvas(QGraphicsView):
         e.accept()
 
     def drawBackground(self, p, rect):
-        p.fillRect(rect, QColor("#1b1c1f"))
+        t = theme.current()
+        p.fillRect(rect, theme.c(t.canvas_bg))
         step = 50
         if self.zoom() * step < 10:
             step *= 5
@@ -255,7 +263,7 @@ class Canvas(QGraphicsView):
                 return
         left = int(rect.left()) - int(rect.left()) % step
         top = int(rect.top()) - int(rect.top()) % step
-        p.setPen(QPen(QColor(255, 255, 255, 14), 0))
+        p.setPen(QPen(theme.c(t.grid), 0))
         x = left
         while x < rect.right():
             p.drawLine(QPointF(x, rect.top()), QPointF(x, rect.bottom()))
@@ -270,7 +278,7 @@ class Canvas(QGraphicsView):
             return
         p.save()
         p.resetTransform()
-        p.setPen(QColor(200, 200, 200, 160))
+        p.setPen(theme.c(theme.current().subtext))
         f = p.font()
         f.setPixelSize(16)
         p.setFont(f)
@@ -329,6 +337,11 @@ class Canvas(QGraphicsView):
             self.ctrl.activate_region(it.region_id, toggle=ctrl_mod and zone in ("title", "arrow"))
             if zone == "arrow":
                 self.ctrl.toggle_collapse(it.region_id)
+            elif zone == "switch":
+                self.ctrl.toggle_auto(it.region_id)
+            elif zone == "menu":
+                below = it.mapToScene(it.r_menu.bottomLeft())
+                self.ctrl.region_menu(self.viewport().mapToGlobal(self.mapFromScene(below)), it.region_id, sp)
             elif zone == "title":
                 self.mode = "region_move"
                 self._snapshot = self.ctrl.snapshot()
@@ -412,7 +425,7 @@ class Canvas(QGraphicsView):
         elif self.mode == "rubber":
             r = QRectF(self._press_scene, sp).normalized()
             self.rubber.setRect(r)
-            hit = {it.ref_id for it in self.scene().items(r, Qt.IntersectsItemBoundingRect)
+            hit = {it.ref_id for it in self.scene().items(r, Qt.IntersectsItemShape)
                    if isinstance(it, ThumbItem) and it.isVisible() and it.parentItem() is not None}
             self.set_selection(hit | self._rubber_base)
 
@@ -513,7 +526,7 @@ class Canvas(QGraphicsView):
         if not additive:
             self.clear_selection()
         self.rubber = QGraphicsRectItem(QRectF(sp, sp))
-        c = QColor(ACCENT)
+        c = theme.c(theme.current().accent)
         self.rubber.setPen(QPen(c, 0, Qt.DashLine))
         c.setAlpha(40)
         self.rubber.setBrush(QBrush(c))

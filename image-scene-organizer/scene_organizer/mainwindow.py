@@ -6,8 +6,8 @@ import copy
 import os
 import time
 
-from PySide6.QtCore import QPointF, QRectF, QSettings, QStandardPaths, Qt, QTimer
-from PySide6.QtGui import QAction, QColor, QIcon, QKeySequence, QPixmap
+from PySide6.QtCore import QPointF, QRectF, QSettings, QSize, QStandardPaths, Qt, QTimer
+from PySide6.QtGui import QAction, QActionGroup, QColor, QIcon, QImageReader, QKeySequence, QPixmap
 from PySide6.QtWidgets import (QApplication, QColorDialog, QDockWidget, QFileDialog,
                                QInputDialog, QLabel, QListWidget, QListWidgetItem, QMainWindow,
                                QMenu, QMessageBox, QToolButton)
@@ -16,8 +16,10 @@ from . import fileops
 from .i18n import LANGUAGES, language, tr
 from .canvas import Canvas
 from .dialogs import BulkRenameDialog, PreferencesDialog
-from .model import (PRESET_COLORS, PROJECT_EXT, REGION_EXT, THUMB_DEFAULT, THUMB_MAX,
-                    THUMB_MIN, ImageRef, Project, Region, cell_size,
+from . import theme
+from .icons import icon
+from .model import (ASPECTS, PRESET_COLORS, PROJECT_EXT, REGION_EXT, THUMB_DEFAULT, THUMB_MAX,
+                    THUMB_MIN, ImageRef, Project, Region, closest_aspect,
                     default_region_size, grid_cols, grid_pos, load_json, norm_path,
                     region_file_dict, region_from_file_dict, save_json_atomic)
 from .thumbs import ThumbnailCache
@@ -229,11 +231,18 @@ class MainWindow(QMainWindow):
         tb = self.addToolBar("Quick")
         tb.setObjectName("quick_toolbar")
         tb.setMovable(False)
-        tb.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        tb.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        tb.setIconSize(QSize(26, 20))  # 20px glyph + gap before the label
         A = self.A
-        tb.addAction(A["new"])
-        tb.addAction(A["open"])
-        save_btn = QToolButton()
+        self._tb_icons: list[tuple[object, str, str | None]] = []  # (action/button, icon, fixed colour)
+
+        def themed(obj, name, color=None):
+            self._tb_icons.append((obj, name, color))
+            return obj
+        tb.addAction(themed(A["new"], "file-plus"))
+        tb.addAction(themed(A["open"], "folder-open"))
+        save_btn = themed(QToolButton(), "save", "#4f6bed")
+        save_btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         save_btn.setText(tr("Save"))
         save_btn.setPopupMode(QToolButton.MenuButtonPopup)
         sm = QMenu(save_btn)
@@ -243,36 +252,39 @@ class MainWindow(QMainWindow):
         save_btn.clicked.connect(self.save)
         tb.addWidget(save_btn)
         tb.addSeparator()
-        tb.addAction(A["undo"])
-        tb.addAction(A["redo"])
+        tb.addAction(themed(A["undo"], "undo-2"))
+        tb.addAction(themed(A["redo"], "redo-2"))
         tb.addSeparator()
-        img = QAction(tr("Add Image"), self)
+        img = themed(QAction(tr("Add Image"), self), "image-plus")
         img.triggered.connect(lambda: self.import_dialog(True))
         tb.addAction(img)
-        fol = QAction(tr("Add Folder"), self)
+        fol = themed(QAction(tr("Add Folder"), self), "folder-plus", "#f59e0b")
         fol.triggered.connect(lambda: self.import_folder_dialog(False))
         tb.addAction(fol)
-        reg = QAction(tr("Add Region"), self)
+        reg = themed(QAction(tr("Add Region"), self), "square-plus", "#10b981")
         reg.triggered.connect(lambda: self.new_region())
         tb.addAction(reg)
         tb.addSeparator()
-        tb.addAction(A["auto"])
-        col_btn = QToolButton()
+        tb.addAction(themed(A["auto"], "arrow-down-up", "#3b82f6"))
+        col_btn = themed(QToolButton(), "palette", "#8b5cf6")
+        col_btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         col_btn.setText(tr("Region Color"))
         col_btn.setPopupMode(QToolButton.InstantPopup)
         cm = QMenu(col_btn)
         cm.aboutToShow.connect(lambda: self._fill_color_menu(cm, None))
         col_btn.setMenu(cm)
         tb.addWidget(col_btn)
-        lk = QAction(tr("Lock"), self)
-        lk.triggered.connect(lambda: self.set_locked(True))
+        lk = themed(QAction(tr("Lock / Unlock"), self), "lock", "#f59e0b")
+        lk.setToolTip(tr("Lock the selected images, or unlock them if they are all locked (Ctrl+L / Ctrl+Shift+L)"))
+        lk.triggered.connect(self.toggle_lock_selection)
         tb.addAction(lk)
-        ul = QAction(tr("Unlock"), self)
-        ul.triggered.connect(lambda: self.set_locked(False))
-        tb.addAction(ul)
         tb.addSeparator()
-        tb.addAction(A["fit_all"])
-        tb.addAction(A["bulk_rename"])
+        tb.addAction(themed(A["fit_all"], "scan"))
+        self.apply_toolbar_icons()
+
+    def apply_toolbar_icons(self):
+        for obj, name, color in self._tb_icons:
+            obj.setIcon(icon(name, color or theme.current().icon, gap=6))
 
     def _build_dock(self):
         self.region_list = QListWidget()
@@ -287,12 +299,59 @@ class MainWindow(QMainWindow):
         act.setText(tr("Region List Sidebar"))
         self.view_menu.addSeparator()
         self.view_menu.addAction(act)
+        am = self.view_menu.addMenu(tr("Thumbnail Shape"))
+        self._aspect_actions = {}
+        grp = QActionGroup(self)
+        for key in ASPECTS:
+            act_a = am.addAction(key)
+            act_a.setCheckable(True)
+            grp.addAction(act_a)
+            act_a.triggered.connect(lambda _=False, k=key: self.set_thumb_aspect(k))
+            self._aspect_actions[key] = act_a
+        am.addSeparator()
+        grp_f = QActionGroup(self)
+        self._fill_actions = {}
+        for key, label in (("cover", tr("Fill the box (crop edges)")), ("fit", tr("Show whole image"))):
+            act_f = am.addAction(label)
+            act_f.setCheckable(True)
+            grp_f.addAction(act_f)
+            act_f.triggered.connect(lambda _=False, k=key: self.set_thumb_fill(k))
+            self._fill_actions[key] = act_f
+        thm = self.view_menu.addMenu(tr("Theme"))
+        grp_t = QActionGroup(self)
+        for key, label in (("light", tr("Light")), ("dark", tr("Dark"))):
+            act_t = thm.addAction(label)
+            act_t.setCheckable(True)
+            act_t.setChecked(theme.current().name == key)
+            grp_t.addAction(act_t)
+            act_t.triggered.connect(lambda _=False, k=key: self.set_ui_theme(k))
         lm = self.view_menu.addMenu(tr("Language"))
         for code, label in LANGUAGES.items():
             la = lm.addAction(label)
             la.setCheckable(True)
             la.setChecked(code == language())
             la.triggered.connect(lambda _=False, c=code: self.set_ui_language(c))
+
+    def set_ui_theme(self, name: str):
+        """Switch light/dark immediately (palette, toolbar icons, canvas)."""
+        t = theme.set_theme(name)
+        self.settings.setValue("ui/theme", t.name)
+        app = QApplication.instance()
+        app.setPalette(theme.palette(t))
+        app.setStyleSheet(theme.stylesheet(t))
+        self.apply_toolbar_icons()
+        self.canvas.scene().update()
+        self.canvas.viewport().update()
+
+    def set_thumb_aspect(self, key: str):
+        self.project.thumb_aspect, self.project.aspect_auto = key, False
+        self.set_dirty()
+        self.refresh()
+
+    def set_thumb_fill(self, key: str):
+        self.project.thumb_fill = key
+        self.set_dirty()
+        self.refresh()
 
     def set_ui_language(self, code: str):
         """Saved for the next start (menus are built once at start-up)."""
@@ -331,6 +390,11 @@ class MainWindow(QMainWindow):
         A["paste"].setEnabled(True)
         for k in ("show_region_names", "show_labels", "show_numbers"):
             A[k].setChecked(getattr(self.project, k))
+        if hasattr(self, "_aspect_actions"):
+            for key, act in self._aspect_actions.items():
+                act.setChecked(key == self.project.thumb_aspect)
+            for key, act in self._fill_actions.items():
+                act.setChecked(key == self.project.thumb_fill)
         self._refresh_region_list()
         self._update_status()
         self.update_title()
@@ -415,6 +479,7 @@ class MainWindow(QMainWindow):
         # display settings are not part of undo
         p.thumb_size, p.show_labels, p.show_numbers = keep.thumb_size, keep.show_labels, keep.show_numbers
         p.show_region_names, p.view = keep.show_region_names, keep.view
+        p.thumb_aspect, p.thumb_fill, p.aspect_auto = keep.thumb_aspect, keep.thumb_fill, keep.aspect_auto
         self.project = p
         if not p.region(self.active_region_id):
             self.active_region_id = None
@@ -509,7 +574,7 @@ class MainWindow(QMainWindow):
 
     def _make_region(self, at: QPointF | None = None, name: str | None = None,
                      color: str | None = None) -> Region:
-        w, h = default_region_size(self.project.thumb_size, self.project.show_labels)
+        w, h = default_region_size(*self.project.cell())
         if at is None:
             at = self._free_region_spot(w, h)
         if color is None:
@@ -575,7 +640,7 @@ class MainWindow(QMainWindow):
             return
         self.checkpoint()
         if reg.auto_arrange:  # freeze current grid positions so nothing jumps
-            cw, ch = cell_size(self.project.thumb_size, self.project.show_labels)
+            cw, ch = self.project.cell()
             cols = grid_cols(reg.w, cw)
             for i, ref in enumerate(reg.images):
                 ref.x, ref.y = grid_pos(i, cols, cw, ch)
@@ -666,6 +731,7 @@ class MainWindow(QMainWindow):
         if not regs:
             return
         self.checkpoint()
+        self.canvas.sync()  # sizes must be current (a region may just have been resized)
         rects = {r.id: self._region_display_rect(r) for r in regs}
         x0 = min(r.x for r in regs)
         y0 = min(r.y for r in regs)
@@ -704,7 +770,7 @@ class MainWindow(QMainWindow):
             self.status(tr("Auto-Arrange is ON: the region is already arranged"))
             return
         self.checkpoint()
-        cw, ch = cell_size(self.project.thumb_size, self.project.show_labels)
+        cw, ch = self.project.cell()
         cols = grid_cols(reg.w, cw)
         for i, ref in enumerate(reg.images):
             if not ref.locked:
@@ -721,7 +787,7 @@ class MainWindow(QMainWindow):
             self.status(tr("Only meaningful with Auto-Arrange OFF"))
             return
         self.checkpoint()
-        _, ch = cell_size(self.project.thumb_size, self.project.show_labels)
+        _, ch = self.project.cell()
         row_h = max(ch / 2, 1)
         free = sorted((r for r in reg.images if not r.locked), key=lambda r: (round(r.y / row_h), r.x))
         it = iter(free)
@@ -765,6 +831,19 @@ class MainWindow(QMainWindow):
                 return r
         return self._make_region(None, tr("Unsorted"), PRESET_COLORS[2][1])
 
+    def _pick_aspect(self, files: list[str]):
+        """First import into an empty project: thumbnail shape follows the images
+        (portrait NovelAI images get 2:3, screenshots 16:9...). Reads headers only."""
+        ratios = []
+        for f in files[:40]:
+            size = QImageReader(f).size()
+            if size.isValid() and size.height() > 0:
+                ratios.append(size.width() / size.height())
+        if ratios:
+            ratios.sort()
+            self.project.thumb_aspect = closest_aspect(ratios[len(ratios) // 2])
+            self.project.aspect_auto = False
+
     def import_dialog(self, multiple: bool):
         start = self.settings.value("dirs/import", "")
         if multiple:
@@ -793,6 +872,8 @@ class MainWindow(QMainWindow):
             self.status(tr("No supported images found"))
             return
         self.checkpoint()
+        if self.project.aspect_auto and self.project.image_count() == 0:
+            self._pick_aspect(files)
         reg = self.resolve_import_target(region_id, create_at)
         existing = {norm_path(r.path) for r in reg.images}
         new = [ImageRef(f) for f in files if norm_path(f) not in existing]
@@ -803,7 +884,7 @@ class MainWindow(QMainWindow):
             self.status(tr("All {n} image(s) are already in '{name}'", n=skipped, name=reg.name))
             return
         if not reg.auto_arrange:
-            cw, ch = cell_size(self.project.thumb_size, self.project.show_labels)
+            cw, ch = self.project.cell()
             for ref, (x, y) in zip(new, reg.free_spot_positions(len(new), cw, ch)):
                 ref.x, ref.y = x, y
         at = reg.insert(new, index)
@@ -880,7 +961,7 @@ class MainWindow(QMainWindow):
         for r in moving:
             r.locked = False
         if not target.auto_arrange:
-            cw, ch = cell_size(self.project.thumb_size, self.project.show_labels)
+            cw, ch = self.project.cell()
             for ref, (x, y) in zip(moving, target.free_spot_positions(len(moving), cw, ch)):
                 ref.x, ref.y = x, y
         index = target.index_of(anchor) + 1 if anchor and target.index_of(anchor) >= 0 else None
@@ -925,7 +1006,7 @@ class MainWindow(QMainWindow):
             for reg in self.project.regions:
                 reg.remove(ids)
         if not target.auto_arrange:
-            cw, ch = cell_size(self.project.thumb_size, self.project.show_labels)
+            cw, ch = self.project.cell()
             for ref, (x, y) in zip(items, target.free_spot_positions(len(items), cw, ch)):
                 ref.x, ref.y = x, y
         target.insert(items)
@@ -986,6 +1067,10 @@ class MainWindow(QMainWindow):
             r.locked = locked
         self.refresh()
         self.status(tr("Locked {n} image(s)" if locked else "Unlocked {n} image(s)", n=len(refs)))
+
+    def toggle_lock_selection(self):
+        refs = self.selected_refs()
+        self.set_locked(not refs or not all(r.locked for _, r in refs))
 
     def lock_up_to_selection(self, region_id=None, ref_id: str | None = None):
         reg = self.project.region(region_id or self.active_region_id)

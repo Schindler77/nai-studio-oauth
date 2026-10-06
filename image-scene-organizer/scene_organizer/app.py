@@ -6,34 +6,24 @@ import sys
 import time
 import traceback
 
-from PySide6.QtCore import QLibraryInfo, QLocale, QSettings, QStandardPaths, Qt, QTranslator
-from PySide6.QtGui import QColor, QImageReader, QPalette
+from PySide6.QtCore import QLibraryInfo, QLocale, QSettings, QStandardPaths, QTranslator
+from PySide6.QtGui import QImageReader
 from PySide6.QtWidgets import QApplication, QMessageBox
 
-from . import i18n
+from . import i18n, theme
 from .i18n import tr
 from .mainwindow import APP_NAME, MainWindow
 
 
-def _dark_palette(app: QApplication) -> None:
+def apply_appearance(app: QApplication) -> None:
+    """Fusion style + saved theme (default light) + bundled Pretendard font."""
     app.setStyle("Fusion")
-    p = QPalette()
-    base, alt, text = QColor("#232428"), QColor("#2b2d31"), QColor("#e6e6e6")
-    p.setColor(QPalette.Window, alt)
-    p.setColor(QPalette.WindowText, text)
-    p.setColor(QPalette.Base, base)
-    p.setColor(QPalette.AlternateBase, alt)
-    p.setColor(QPalette.ToolTipBase, QColor("#333"))
-    p.setColor(QPalette.ToolTipText, text)
-    p.setColor(QPalette.Text, text)
-    p.setColor(QPalette.Button, alt)
-    p.setColor(QPalette.ButtonText, text)
-    p.setColor(QPalette.Highlight, QColor("#2f7fb8"))
-    p.setColor(QPalette.HighlightedText, Qt.white)
-    p.setColor(QPalette.Disabled, QPalette.Text, QColor("#777"))
-    p.setColor(QPalette.Disabled, QPalette.ButtonText, QColor("#777"))
-    p.setColor(QPalette.Disabled, QPalette.WindowText, QColor("#777"))
-    app.setPalette(p)
+    family = theme.load_fonts()
+    if family:
+        app.setFont(theme.ui_font(family))
+    t = theme.set_theme(str(QSettings().value("ui/theme", theme.DEFAULT_THEME)))
+    app.setPalette(theme.palette(t))
+    app.setStyleSheet(theme.stylesheet(t))
 
 
 def _install_excepthook() -> None:
@@ -99,7 +89,7 @@ def main(argv: list[str] | None = None) -> int:
     app.setApplicationName("ImageSceneOrganizer")
     app.setApplicationDisplayName(APP_NAME)
     QImageReader.setAllocationLimit(2048)  # MB; allow very large source images in the viewer
-    _dark_palette(app)
+    apply_appearance(app)
     _apply_language(app)
     if self_test:
         return _self_test(app, os.path.abspath(self_test))
