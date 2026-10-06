@@ -10,6 +10,7 @@ from PySide6.QtGui import QColor, QImage, QKeySequence, QMouseEvent, QPainter, Q
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QInputDialog, QMessageBox
 
+from scene_organizer import i18n
 from scene_organizer import mainwindow as mw_mod
 from scene_organizer.mainwindow import MainWindow
 from scene_organizer.viewer import ImageViewer
@@ -64,8 +65,9 @@ def order(reg):
     return [os.path.basename(r.path)[3:5] for r in reg.images]
 
 
-@pytest.fixture
-def win(qapp, tmp_path, monkeypatch):
+@pytest.fixture(params=["en", "ko"])
+def win(request, qapp, tmp_path, monkeypatch):
+    i18n.set_language(request.param)
     monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Discard))
     w = MainWindow()
     w.resize(1400, 900)
@@ -185,7 +187,7 @@ def test_first_prototype_flow(win, tmp_path, monkeypatch):
     win.undo()
     assert reg_by_name(win, "First Meeting").images[5].id == moved
     win.redo()
-    assert reg_by_name(win, "Region 2").images[0].id == moved
+    assert reg_by_name(win, i18n.tr("Region {n}", n=2)).images[0].id == moved
 
     # 16 / §34F: wheel zooms canvas, Ctrl+wheel changes thumbnail size only
     z0, t0 = win.canvas.zoom(), win.project.thumb_size
@@ -214,7 +216,7 @@ def test_first_prototype_flow(win, tmp_path, monkeypatch):
 
     # 18-21 / §34C: save, new, reopen
     reg.auto_arrange = True
-    reg2 = reg_by_name(win, "Region 2")
+    reg2 = reg_by_name(win, i18n.tr("Region {n}", n=2))
     win.toggle_auto(reg2.id)  # OFF, must be restored
     snapshot = win.project.to_dict()["regions"]
     path = str(tmp_path / "proj.isproj")
@@ -456,3 +458,61 @@ def test_autoscroll_while_dragging(win, tmp_path):
     send_mouse(vp, QMouseEvent.MouseButtonRelease, vp.rect().center(), Qt.RightButton, Qt.LeftButton)
     send_mouse(vp, QMouseEvent.MouseButtonRelease, vp.rect().center(), Qt.LeftButton, Qt.NoButton)
     assert win.canvas.mode is None and len(reg.images) == 3
+
+
+def _has_hangul(text: str) -> bool:
+    return any("가" <= ch <= "힣" for ch in text)
+
+
+def _menu_texts(menu, out):
+    menu.aboutToShow.emit()  # fill dynamic menus (recent projects, colours)
+    for a in menu.actions():
+        if a.isSeparator():
+            continue
+        out.append(a.text())
+        if a.menu() is not None:
+            _menu_texts(a.menu(), out)
+
+
+def test_korean_ui_is_complete(qapp, tmp_path, monkeypatch):
+    """Every menu, context menu, toolbar button and dialog shows Korean."""
+    from PySide6.QtWidgets import QToolButton
+    from scene_organizer.dialogs import BulkRenameDialog, PreferencesDialog
+    i18n.set_language("ko")
+    make_images(str(tmp_path / "a"), 2)
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Discard))
+    w = MainWindow()
+    w.show()
+    pump(50)
+    w.new_region()
+    w.import_paths([str(tmp_path / "a")])
+    reg = w.project.regions[0]
+    assert reg.name == "영역 1"
+    w.canvas.set_selection([reg.images[0].id])
+    texts = []
+    for a in w.menuBar().actions():
+        texts.append(a.text())
+        _menu_texts(a.menu(), texts)
+    for tb_action in w.findChildren(QToolButton):
+        if tb_action.text():
+            texts.append(tb_action.text())
+    menus = []
+    monkeypatch.setattr(mw_mod, "exec_menu", lambda m, pos: menus.append(m))
+    w.image_menu(QPoint(0, 0), reg.images[0].id)
+    w.region_menu(QPoint(0, 0), reg.id, QPointF(0, 0))
+    w.canvas_menu(QPoint(0, 0), QPointF(0, 0))
+    for m in menus:
+        _menu_texts(m, texts)
+    allowed = {"English", "한국어", reg.name}  # language names, user content
+    untranslated = sorted({t for t in texts if t and t not in allowed and not _has_hangul(t)
+                           and not t.endswith(".isproj")})  # recent-project paths
+    assert not untranslated, untranslated
+    for dlg in (BulkRenameDialog(w, reg.name, [r.path for r in reg.images]), PreferencesDialog(w, True, 3)):
+        assert _has_hangul(dlg.windowTitle())
+    v = ImageViewer(w, [(r.path, r.display_name) for r in reg.images], 0)
+    assert _has_hangul(v.windowTitle())
+    w.grab()  # paints region title / badges / hint through tr()
+    assert _has_hangul(w.lbl_counts.text()) and _has_hangul(w.windowTitle())
+    w.dirty = False
+    w.close()
+    shutil.rmtree(w.data_dir, ignore_errors=True)

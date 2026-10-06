@@ -6,10 +6,12 @@ import sys
 import time
 import traceback
 
-from PySide6.QtCore import QStandardPaths, Qt
+from PySide6.QtCore import QLibraryInfo, QLocale, QSettings, QStandardPaths, Qt, QTranslator
 from PySide6.QtGui import QColor, QImageReader, QPalette
 from PySide6.QtWidgets import QApplication, QMessageBox
 
+from . import i18n
+from .i18n import tr
 from .mainwindow import APP_NAME, MainWindow
 
 
@@ -49,12 +51,23 @@ def _install_excepthook() -> None:
                 f.write(f"\n--- {time.strftime('%Y-%m-%d %H:%M:%S')}\n{text}")
         except OSError:
             pass
-        QMessageBox.critical(None, "Unexpected error",
-                             f"{etype.__name__}: {value}\n\nDetails were written to\n"
-                             f"{os.path.join(log_dir, 'error.log')}\n\n"
-                             "Your project is still open - save it with File → Save As.")
+        QMessageBox.critical(None, tr("Unexpected error"),
+                             tr("{etype}: {value}\n\nDetails were written to\n{log}\n\nYour project is still open - "
+                                "save it with File → Save As.", etype=etype.__name__, value=value,
+                                log=os.path.join(log_dir, "error.log")))
 
     sys.excepthook = hook
+
+
+def _apply_language(app: QApplication) -> None:
+    """UI language from the settings (default Korean) + Qt's own dialog texts."""
+    lang = QSettings().value("ui/language", i18n.DEFAULT_LANGUAGE)
+    i18n.set_language(str(lang))
+    if i18n.language() == "ko":
+        QLocale.setDefault(QLocale(QLocale.Korean, QLocale.SouthKorea))
+        qt_tr = QTranslator(app)
+        if qt_tr.load("qtbase_ko", QLibraryInfo.path(QLibraryInfo.TranslationsPath)):
+            app.installTranslator(qt_tr)  # Save / Cancel / Yes / No, file dialogs
 
 
 def _self_test(app: QApplication, out_dir: str) -> int:
@@ -87,6 +100,7 @@ def main(argv: list[str] | None = None) -> int:
     app.setApplicationDisplayName(APP_NAME)
     QImageReader.setAllocationLimit(2048)  # MB; allow very large source images in the viewer
     _dark_palette(app)
+    _apply_language(app)
     if self_test:
         return _self_test(app, os.path.abspath(self_test))
     _install_excepthook()

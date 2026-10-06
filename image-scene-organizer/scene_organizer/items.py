@@ -7,6 +7,7 @@ from PySide6.QtGui import QBrush, QColor, QFont, QFontMetrics, QPainterPath, QPe
 from PySide6.QtWidgets import QGraphicsItem, QStyleOptionGraphicsItem
 
 from .model import LABEL_H, TITLE_H
+from .i18n import tr
 
 ACCENT = QColor("#4fc3f7")
 TEXT = QColor("#e6e6e6")
@@ -84,7 +85,7 @@ class ThumbItem(QGraphicsItem):
             p.drawLine(box.topLeft() + QPointF(8, 8), box.bottomRight() - QPointF(8, 8))
             p.drawLine(box.topRight() + QPointF(-8, 8), box.bottomLeft() + QPointF(8, -8))
             if lod > 0.3:
-                p.drawText(box, Qt.AlignCenter, "missing")
+                p.drawText(box, Qt.AlignCenter, tr("missing file"))
         elif lod > 0.3:
             p.setPen(QColor(120, 120, 120))
             p.drawText(box, Qt.AlignCenter, "…")
@@ -212,7 +213,7 @@ class RegionItem(QGraphicsItem):
         p.setPen(fg)
         p.drawText(QRectF(6, 0, self.ARROW_W, TITLE_H), Qt.AlignVCenter | Qt.AlignLeft,
                    "▶" if self.collapsed else "▼")
-        badges = ("AUTO" if self.auto else "FREE")
+        badges = tr("AUTO") if self.auto else tr("FREE")
         if self.locked_count:
             badges = f"{self.locked_count}      " + badges
         f2 = QFont(f)
@@ -220,8 +221,8 @@ class RegionItem(QGraphicsItem):
         f2.setBold(True)
         fm2 = QFontMetrics(f2)
         bw = fm2.horizontalAdvance(badges) + 12
-        name = f"{self.name}  ({self.count} images)" if self.canvas.show_region_names() \
-            else f"({self.count} images)"
+        name = tr("{name}  ({n} images)", name=self.name, n=self.count) if self.canvas.show_region_names() \
+            else tr("({n} images)", n=self.count)
         fm = QFontMetrics(f)
         avail = int(self.w - self.ARROW_W - bw - 12)
         p.drawText(QRectF(self.ARROW_W, 0, max(avail, 10), TITLE_H), Qt.AlignVCenter | Qt.AlignLeft,
@@ -242,4 +243,4 @@ class RegionItem(QGraphicsItem):
                 f3.setBold(False)
                 p.setFont(f3)
                 p.drawText(rect.adjusted(0, TITLE_H, 0, 0), Qt.AlignCenter,
-                           "Drop images here, or select this region and use Import")
+                           tr("Drop images here, or select this region and use Import"))

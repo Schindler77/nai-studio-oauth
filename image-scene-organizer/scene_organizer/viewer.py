@@ -13,6 +13,8 @@ from PySide6.QtGui import QColor, QImageReader, QKeySequence, QPainter, QPixmap,
 from PySide6.QtWidgets import (QDialog, QGraphicsPixmapItem, QGraphicsScene, QGraphicsView,
                                QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget)
 
+from .i18n import tr
+
 ZMIN, ZMAX = 0.02, 32.0
 
 
@@ -51,7 +53,7 @@ class _View(QGraphicsView):
 class ImageViewer(QDialog):
     def __init__(self, parent, paths_and_names: list[tuple[str, str]], index: int):
         super().__init__(parent)
-        self.setWindowTitle("Image Viewer")
+        self.setWindowTitle(tr("Image Viewer"))
         self.setModal(True)
         self.items = paths_and_names
         self.index = index
@@ -65,12 +67,12 @@ class ImageViewer(QDialog):
         self.title = QLabel()
         self.prev_btn = QPushButton("◀")
         self.next_btn = QPushButton("▶")
-        fit_btn = QPushButton("Fit to Screen")
+        fit_btn = QPushButton(tr("Fit to Screen"))
         one_btn = QPushButton("100%")
         self.zoom_lbl = QLabel("100%")
         self.zoom_lbl.setMinimumWidth(60)
         self.zoom_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        close_btn = QPushButton("Close (Esc)")
+        close_btn = QPushButton(tr("Close (Esc)"))
         for w in (self.prev_btn, self.next_btn):
             w.setFixedWidth(36)
         hl.addWidget(self.prev_btn)
@@ -108,7 +110,7 @@ class ImageViewer(QDialog):
         pix = QPixmap.fromImage(img) if not img.isNull() else QPixmap()
         self.view.item.setPixmap(pix)
         self.view.scene().setSceneRect(QRectF(pix.rect()))
-        dims = f"{pix.width()}×{pix.height()}" if not pix.isNull() else f"cannot open ({reader.errorString()})"
+        dims = f"{pix.width()}×{pix.height()}" if not pix.isNull() else tr("cannot open ({err})", err=reader.errorString())
         self.title.setText(f"{self.index + 1} / {len(self.items)}   {name}   —   {dims}   "
                            f"<span style='color:#888'>{os.path.basename(path)}</span>")
         self.prev_btn.setEnabled(self.index > 0)

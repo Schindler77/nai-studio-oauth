@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox, QFormLayout
                                QTableWidgetItem, QVBoxLayout)
 
 from . import fileops
+from .i18n import tr
 
 STATUS_TEXT = {
     "ok": ("rename", "#7bd88f"),
@@ -24,7 +25,7 @@ class BulkRenameDialog(QDialog):
 
     def __init__(self, parent, region_name: str, paths: list[str]):
         super().__init__(parent)
-        self.setWindowTitle(f"Rename Actual Files by Order — {region_name}")
+        self.setWindowTitle(tr("Rename Actual Files by Order — {name}", name=region_name))
         self.resize(980, 620)
         self.paths = paths
         self.entries: list[fileops.RenameEntry] = []
@@ -38,19 +39,19 @@ class BulkRenameDialog(QDialog):
         self.pad.setRange(1, 8)
         self.pad.setValue(3)
         form = QFormLayout()
-        form.addRow("Name pattern", self.template)
+        form.addRow(tr("Name pattern"), self.template)
         form.addRow("{region} =", self.region)
         row = QHBoxLayout()
-        row.addWidget(QLabel("Start at"))
+        row.addWidget(QLabel(tr("Start at")))
         row.addWidget(self.start)
         row.addSpacing(20)
-        row.addWidget(QLabel("Digits"))
+        row.addWidget(QLabel(tr("Digits")))
         row.addWidget(self.pad)
         row.addStretch(1)
         form.addRow(row)
 
         self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["#", "Current file", "New file", "Status"])
+        self.table.setHorizontalHeaderLabels(["#", tr("Current file"), tr("New file"), tr("Status")])
         hh = self.table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.ResizeToContents)
         hh.setSectionResizeMode(1, QHeaderView.Stretch)
@@ -60,13 +61,13 @@ class BulkRenameDialog(QDialog):
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
 
         self.summary = QLabel()
-        warn = QLabel("This renames the REAL files on disk (extensions are kept). The project file "
-                      "is saved afterwards so it points to the new names. A rename log is written "
-                      "so the operation can be reverted (File → Revert Last File Rename/Move).")
+        warn = QLabel(tr("This renames the REAL files on disk (extensions are kept). The project file is saved "
+                         "afterwards so it points to the new names. A rename log is written so the operation can "
+                         "be reverted (File → Revert Last File Rename/Move)."))
         warn.setWordWrap(True)
         warn.setStyleSheet("color:#e0a052")
         self.buttons = QDialogButtonBox(QDialogButtonBox.Cancel)
-        self.apply_btn = self.buttons.addButton("Apply Rename", QDialogButtonBox.AcceptRole)
+        self.apply_btn = self.buttons.addButton(tr("Apply Rename"), QDialogButtonBox.AcceptRole)
         self.buttons.accepted.connect(self.accept)
         self.buttons.rejected.connect(self.reject)
 
@@ -90,6 +91,7 @@ class BulkRenameDialog(QDialog):
         for i, e in enumerate(self.entries):
             counts[e.status] = counts.get(e.status, 0) + 1
             txt, col = STATUS_TEXT[e.status]
+            txt = tr(txt)
             cells = [str(i + 1), os.path.basename(e.old), os.path.basename(e.new), txt]
             for c, v in enumerate(cells):
                 it = QTableWidgetItem(v)
@@ -100,29 +102,29 @@ class BulkRenameDialog(QDialog):
                 self.table.setItem(i, c, it)
         conflicts = counts.get("conflict", 0)
         n_ok = counts.get("ok", 0)
-        self.summary.setText(f"{n_ok} file(s) will be renamed"
-                             + (f", {conflicts} conflict(s) — change the pattern or start number"
+        self.summary.setText(tr("{n} file(s) will be renamed", n=n_ok)
+                             + (tr(", {n} conflict(s) — change the pattern or start number", n=conflicts)
                                 if conflicts else "")
-                             + "".join(f", {v} {k}" for k, v in counts.items()
-                                       if k not in ("ok", "conflict")))
+                             + "".join(tr(", {n} {what}", n=v, what=tr(STATUS_TEXT[k][0]))
+                                       for k, v in counts.items() if k not in ("ok", "conflict")))
         self.apply_btn.setEnabled(n_ok > 0 and conflicts == 0)
 
 
 class PreferencesDialog(QDialog):
     def __init__(self, parent, autosave_on: bool, autosave_min: int):
         super().__init__(parent)
-        self.setWindowTitle("Preferences")
-        self.autosave = QCheckBox("Enable autosave")
+        self.setWindowTitle(tr("Preferences"))
+        self.autosave = QCheckBox(tr("Enable autosave"))
         self.autosave.setChecked(autosave_on)
         self.interval = QSpinBox()
         self.interval.setRange(1, 120)
-        self.interval.setSuffix(" min")
+        self.interval.setSuffix(tr(" min"))
         self.interval.setValue(autosave_min)
         form = QFormLayout(self)
         form.addRow(self.autosave)
-        form.addRow("Autosave interval", self.interval)
-        note = QLabel("Autosave writes to a separate recovery file and never overwrites your "
-                      "project file. After a crash you are offered to restore it on next start.")
+        form.addRow(tr("Autosave interval"), self.interval)
+        note = QLabel(tr("Autosave writes to a separate recovery file and never overwrites your project file. "
+                         "After a crash you are offered to restore it on next start."))
         note.setWordWrap(True)
         form.addRow(note)
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)

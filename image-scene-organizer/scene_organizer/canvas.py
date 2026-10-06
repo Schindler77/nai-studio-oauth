@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (QApplication, QGraphicsRectItem, QGraphicsScene,
                                QGraphicsView)
 
 from .items import ACCENT, RegionItem, ThumbItem
+from .i18n import tr
 from .model import (PAD, TITLE_H, adjust_insert_index, cell_size, grid_cols,
                     grid_content_height, grid_pos, slot_at)
 
@@ -274,8 +275,8 @@ class Canvas(QGraphicsView):
         f.setPixelSize(16)
         p.setFont(f)
         p.drawText(QRectF(self.viewport().rect()), Qt.AlignCenter,
-                   "Right-click → New Region   ·   or drop images / folders here\n"
-                   "Wheel = zoom   ·   Ctrl+Wheel = thumbnail size   ·   Middle-drag or Space+drag = pan")
+                   tr("Right-click → New Region   ·   or drop images / folders here\n"
+                      "Wheel = zoom   ·   Ctrl+Wheel = thumbnail size   ·   Middle-drag or Space+drag = pan"))
         p.restore()
 
     # --------------------------------------------------------------- mouse
@@ -288,7 +289,7 @@ class Canvas(QGraphicsView):
             if self.mode in ("drag", "region_move", "region_resize", "rubber", "press_thumb"):
                 self.cancel_interaction()
                 self._right_cancelled = True
-                self.ctrl.status("Cancelled (right-click)")
+                self.ctrl.status(tr("Cancelled (right-click)"))
             e.accept()
             return
         if btn == Qt.MiddleButton or (btn == Qt.LeftButton and self.space_down):
@@ -531,7 +532,7 @@ class Canvas(QGraphicsView):
         sel = [t for t in self.selected_thumbs() if t.isVisible() and t.parentItem() is not None]
         movable = [t for t in sel if not t.locked]
         if self._press_item.locked or not movable:
-            self.ctrl.status("Locked images can't be moved. Unlock them first.")
+            self.ctrl.status(tr("Locked images can't be moved. Unlock them first."))
             self.mode = None
             return
         order = self.ctrl.sequence_key()
@@ -547,7 +548,7 @@ class Canvas(QGraphicsView):
             t.setZValue(1_000_000)
             t.setOpacity(0.82)
         if len(movable) < len(sel):
-            self.ctrl.status(f"{len(sel) - len(movable)} locked image(s) stay in place")
+            self.ctrl.status(tr("{n} locked image(s) stay in place", n=len(sel) - len(movable)))
         self.mode = "drag"
         self.viewport().setCursor(Qt.ClosedHandCursor)
 
@@ -590,7 +591,7 @@ class Canvas(QGraphicsView):
         self.viewport().setCursor(Qt.ArrowCursor)
         if target is None:
             self.cancel_drag()
-            self.ctrl.status("Dropped outside any region: move cancelled")
+            self.ctrl.status(tr("Dropped outside any region: move cancelled"))
             return
         target.set_drop_hint(False)
         positions = {}
