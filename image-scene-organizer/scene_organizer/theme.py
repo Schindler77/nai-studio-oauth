@@ -110,6 +110,13 @@ def stylesheet(t: Theme) -> str:
     #SidebarTitle {{ font-weight: 600; color: {t.text}; }}
     #SidebarTip {{ color: {t.subtext}; }}
     #RegionList {{ background: transparent; }}
+    #SearchBox {{ background: {t.alt}; border: 1px solid {t.border}; border-radius: 8px;
+                  padding: 5px 8px; color: {t.text}; }}
+    #SearchBox:focus {{ border: 1px solid {t.accent}; background: {t.base}; }}
+    #StatusButton {{ background: {t.base}; border: 1px solid {t.border}; border-radius: 6px;
+                     padding: 3px 12px; color: {t.text}; }}
+    #StatusButton:hover {{ background: {t.hover}; }}
+    #TipLink {{ color: {t.accent}; }}
     #Sidebar QToolButton {{ border-radius: 6px; padding: 2px; }}
     #Sidebar QToolButton:hover {{ background: {t.hover}; }}
     """

@@ -170,6 +170,8 @@ class Region:
     collapsed: bool = False
     images: list[ImageRef] = field(default_factory=list)
     id: str = field(default_factory=new_id)
+    scroll_enabled: bool = False  # open item (spec §38): fixed height + scroll inside the region
+    scroll: float = 0.0
 
     # -- queries
     def index_of(self, ref_id: str) -> int:
@@ -233,6 +235,7 @@ class Region:
                 "x": round(self.x, 2), "y": round(self.y, 2),
                 "w": round(self.w, 2), "h": round(self.h, 2),
                 "auto_arrange": self.auto_arrange, "collapsed": self.collapsed,
+                "scroll_enabled": self.scroll_enabled, "scroll": round(self.scroll, 1),
                 "images": [r.to_dict(base_dir) for r in self.images]}
 
     @classmethod
@@ -244,6 +247,8 @@ class Region:
                   [ImageRef.from_dict(i, base_dir, new_ids) for i in d.get("images", [])])
         if not new_ids and d.get("id"):
             reg.id = d["id"]
+        reg.scroll_enabled = bool(d.get("scroll_enabled", False))
+        reg.scroll = float(d.get("scroll", 0.0))
         return reg
 
 

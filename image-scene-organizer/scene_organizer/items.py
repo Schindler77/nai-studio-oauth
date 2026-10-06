@@ -51,6 +51,9 @@ class ThumbItem(QGraphicsItem):
         self.img_h = 100
         self.setFlag(QGraphicsItem.ItemIsSelectable, True)
         self.setAcceptedMouseButtons(Qt.NoButton)  # Canvas handles the mouse
+        # Keep the painted thumbnail as a pixmap: dragging / panning only moves it
+        # (re-rendered when the zoom, selection or picture changes).
+        self.setCacheMode(QGraphicsItem.DeviceCoordinateCache)
 
     def set_cell(self, cw: float, ch: float, img_h: float | None = None) -> None:
         img_h = ch if img_h is None else img_h
@@ -74,6 +77,16 @@ class ThumbItem(QGraphicsItem):
         return path
 
     def paint(self, p, opt: QStyleOptionGraphicsItem, widget=None):
+        parent = self.parentItem()
+        if isinstance(parent, RegionItem) and parent.scroll_on:  # stay inside the scrolling body
+            p.save()
+            p.setClipRect(parent.body_rect().translated(-self.pos()), Qt.IntersectClip)
+            self._paint(p, opt)
+            p.restore()
+        else:
+            self._paint(p, opt)
+
+    def _paint(self, p, opt: QStyleOptionGraphicsItem):
         t = theme.current()
         lod = QStyleOptionGraphicsItem.levelOfDetailFromTransform(p.worldTransform())
         cache = self.canvas.thumbs
@@ -91,7 +104,7 @@ class ThumbItem(QGraphicsItem):
             p.drawRoundedRect(box.adjusted(-2, -2, 2, 2), RADIUS_THUMB + 2, RADIUS_THUMB + 2)
         p.save()
         if detailed:
-            p.setClipPath(clip)
+            p.setClipPath(clip, Qt.IntersectClip)  # keep a scrolling region's body clip
         p.fillRect(box, theme.c(t.thumb_bg))
         pix = cache.get(self.path)
         if pix is not None and not pix.isNull():
@@ -118,6 +131,10 @@ class ThumbItem(QGraphicsItem):
             veil.setAlpha(160)
             p.fillRect(box, veil)
         p.restore()
+        if self.ref_id in self.canvas.search_hits:
+            p.setPen(QPen(QColor("#f59e0b"), 3))
+            p.setBrush(Qt.NoBrush)
+            p.drawRoundedRect(box.adjusted(-4, -4, 4, 4), RADIUS_THUMB + 3, RADIUS_THUMB + 3)
         if selected:
             p.setPen(QPen(theme.c(t.accent), 3))
             p.setBrush(Qt.NoBrush)
@@ -162,7 +179,30 @@ class RegionItem(QGraphicsItem):
         self.multi_selected = False
         self.drop_hint = False
         self.r_arrow = self.r_switch = self.r_menu = QRectF()
+        self.scroll_on = False
+        self.scroll = 0.0
+        self.content_h = 0.0
         self.setAcceptedMouseButtons(Qt.NoButton)
+
+    def set_scroll(self, on: bool, scroll: float, content_h: float) -> None:
+        if (on, scroll, content_h) != (self.scroll_on, self.scroll, self.content_h):
+            self.scroll_on, self.scroll, self.content_h = on, scroll, content_h
+            self.update()
+
+    def body_rect(self) -> QRectF:
+        return QRectF(0, TITLE_H, self.w, max(self.h - TITLE_H, 0))
+
+    def scrollbar_rects(self) -> tuple[QRectF, QRectF] | None:
+        """(track, thumb) when the region scrolls and its content is taller than it."""
+        body = self.body_rect()
+        if not self.scroll_on or self.content_h <= self.h + 0.5 or body.height() < 20:
+            return None
+        track = QRectF(self.w - 11, body.top() + 6, 7, body.height() - 12 - self.GRIP)
+        frac = body.height() / max(self.content_h - TITLE_H, 1)
+        length = max(24.0, track.height() * min(frac, 1.0))
+        max_scroll = max(self.content_h - self.h, 1)
+        top = track.top() + (track.height() - length) * min(self.scroll / max_scroll, 1.0)
+        return track, QRectF(track.left(), top, track.width(), length)
 
     def set_geometry(self, w: float, h: float) -> None:
         if (w, h) != (self.w, self.h):
@@ -211,6 +251,9 @@ class RegionItem(QGraphicsItem):
             return "arrow" if self.r_arrow.contains(local) else "title"
         if not self.collapsed and local.x() >= self.w - self.GRIP and local.y() >= self.h - self.GRIP:
             return "grip"
+        bars = self.scrollbar_rects()
+        if bars and bars[0].adjusted(-4, 0, 4, 0).contains(local):
+            return "scrollbar"
         return "body"
 
     def boundingRect(self) -> QRectF:
@@ -254,6 +297,18 @@ class RegionItem(QGraphicsItem):
         if self.multi_selected:
             p.setPen(QPen(theme.c(t.accent), 1.5, Qt.DashLine))
             p.drawRoundedRect(rect.adjusted(-5, -5, 5, 5), RADIUS_CARD + 4, RADIUS_CARD + 4)
+        if self.region_id in self.canvas.search_regions:
+            p.setPen(QPen(QColor("#f59e0b"), 2.5, Qt.DashLine))
+            p.setBrush(Qt.NoBrush)
+            p.drawRoundedRect(rect.adjusted(-6, -6, 6, 6), RADIUS_CARD + 5, RADIUS_CARD + 5)
+        bars = self.scrollbar_rects()
+        if bars:
+            track, knob = bars
+            p.setPen(Qt.NoPen)
+            p.setBrush(theme.blend(col, base, 0.75))
+            p.drawRoundedRect(track, 3.5, 3.5)
+            p.setBrush(theme.blend(col, base, 0.2))
+            p.drawRoundedRect(knob, 3.5, 3.5)
         if lod < 0.12:
             return
         text_col = theme.c(t.text)

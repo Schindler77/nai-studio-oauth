@@ -3,27 +3,29 @@ commands. The Canvas calls back into it for every model change."""
 from __future__ import annotations
 
 import copy
+import math
 import os
 import time
 
-from PySide6.QtCore import QPointF, QRectF, QSettings, QSize, QStandardPaths, Qt, QTimer
+from PySide6.QtCore import QEvent, QPointF, QRectF, QSettings, QSize, QStandardPaths, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QActionGroup, QColor, QIcon, QImageReader, QKeySequence, QPixmap
 from PySide6.QtWidgets import (QApplication, QColorDialog, QFileDialog, QHBoxLayout,
                                QInputDialog, QLabel, QMainWindow, QMenu, QMessageBox,
-                               QToolButton, QWidget)
+                               QLineEdit, QPushButton, QSizePolicy, QSlider, QToolButton, QWidget)
 
 from . import fileops
 from .i18n import LANGUAGES, language, tr
-from .canvas import Canvas
+from .canvas import ZOOM_MAX, ZOOM_MIN, Canvas
 from .dialogs import BulkRenameDialog, PreferencesDialog
 from . import theme
 from .icons import icon
-from .model import (ASPECTS, PRESET_COLORS, PROJECT_EXT, REGION_EXT, THUMB_DEFAULT, THUMB_MAX,
+from .model import (ASPECTS, PAD, PRESET_COLORS, TITLE_H, PROJECT_EXT, REGION_EXT, THUMB_DEFAULT, THUMB_MAX,
                     THUMB_MIN, ImageRef, Project, Region, closest_aspect,
                     default_region_size, grid_cols, grid_pos, load_json, norm_path,
                     region_file_dict, region_from_file_dict, save_json_atomic)
 from .thumbs import ThumbnailCache
 from .sidebar import Sidebar
+from .tips import TipDialog
 from .viewer import ImageViewer
 
 APP_NAME = "Image Scene Organizer"
@@ -43,9 +45,38 @@ def image_filter() -> str:
     return tr("Images") + " (" + " ".join("*" + e for e in sorted(fileops.SUPPORTED_EXTS)) + ")"
 
 
+class SearchBox(QLineEdit):
+    """Toolbar search field: keeps editing keys for itself, Esc clears,
+    Shift+Enter goes to the previous result."""
+    escaped = Signal()
+    prevRequested = Signal()
+
+    def event(self, e):
+        if e.type() == QEvent.ShortcutOverride:
+            mods = e.modifiers() & ~Qt.ShiftModifier
+            if mods == Qt.NoModifier or e.key() in (Qt.Key_A, Qt.Key_C, Qt.Key_V, Qt.Key_X, Qt.Key_Z, Qt.Key_Y):
+                e.accept()
+                return True
+        return super().event(e)
+
+    def keyPressEvent(self, e):
+        if e.key() == Qt.Key_Escape:
+            self.escaped.emit()
+            return
+        if e.key() in (Qt.Key_Return, Qt.Key_Enter) and e.modifiers() & Qt.ShiftModifier:
+            self.prevRequested.emit()
+            return
+        super().keyPressEvent(e)
+
+
 def exec_menu(menu: QMenu, global_pos) -> None:
     """Single place where context menus are shown (patched in tests)."""
     menu.exec(global_pos)
+
+
+def exec_dialog(dlg) -> int:
+    """Single place where non-critical dialogs are run modally (patched in tests)."""
+    return dlg.exec()
 
 
 def _swatch(color: str) -> QIcon:
@@ -251,6 +282,8 @@ class MainWindow(QMainWindow):
         def themed(obj, name, color=None):
             self._tb_icons.append((obj, name, color))
             return obj
+        A["new"].setIconText(tr("New"))     # short toolbar labels; menus keep the full text
+        A["open"].setIconText(tr("Open"))
         tb.addAction(themed(A["new"], "file-plus"))
         tb.addAction(themed(A["open"], "folder-open"))
         save_btn = themed(QToolButton(), "save", "#4f6bed")
@@ -292,11 +325,98 @@ class MainWindow(QMainWindow):
         tb.addAction(lk)
         tb.addSeparator()
         tb.addAction(themed(A["fit_all"], "scan"))
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        tb.addWidget(spacer)
+        self.search_box = SearchBox()
+        self.search_box.setObjectName("SearchBox")
+        self.search_box.setPlaceholderText(tr("Search the canvas (Ctrl+F)"))
+        self.search_box.setClearButtonEnabled(True)
+        self.search_box.setFixedWidth(270)
+        self.search_icon = self.search_box.addAction(QIcon(), QLineEdit.LeadingPosition)
+        self.search_box.textChanged.connect(self.run_search)
+        self.search_box.returnPressed.connect(lambda: self.search_next(1))
+        self.search_box.prevRequested.connect(lambda: self.search_next(-1))
+        self.search_box.escaped.connect(self._search_escape)
+        tb.addWidget(self.search_box)
+        find = QAction(self)
+        find.setShortcut(QKeySequence.Find)
+        find.triggered.connect(self.focus_search)
+        self.addAction(find)
+        self._search_order: list[tuple[str, str]] = []
+        self._search_pos = -1
         self.apply_toolbar_icons()
+
+    MENU_ICONS = {"save_as": "save", "save_region": "save", "load_region": "folder-input",
+                  "relink": "folder-input", "revert_rename": "undo-2", "copy": "copy", "cut": "scissors",
+                  "paste": "clipboard-paste", "remove": "eraser", "select_all": "list-checks",
+                  "lock": "lock", "unlock": "lock-open", "lock_upto": "lock", "imp_one": "image-plus",
+                  "imp_multi": "image-plus", "imp_folder": "folder-plus", "imp_folder_rec": "folder-plus",
+                  "new_region": "square-plus", "rename_region": "pencil", "dup_region": "copy-plus",
+                  "clear_region": "eraser", "del_region": "trash-2", "collapse": "chevrons-down-up",
+                  "lock_region": "lock", "unlock_region": "lock-open", "bulk_rename": "file-pen-line",
+                  "arr_h": "columns-3", "arr_v": "rows-3", "arr_g": "layout-grid", "arr_sel": "columns-3",
+                  "regrid": "layout-grid", "visual_order": "rows-3", "fit_region": "maximize-2",
+                  "collapse_all": "chevrons-down-up", "expand_all": "chevrons-up-down"}
+
+    # ------------------------------------------------------------- search
+    def focus_search(self):
+        self.search_box.setFocus()
+        self.search_box.selectAll()
+
+    def _search_escape(self):
+        self.search_box.clear()
+        self.canvas.setFocus()
+
+    def run_search(self, text: str):
+        """Highlight images (display or file name) and regions matching the text."""
+        q = text.strip().lower()
+        order: list[tuple[str, str]] = []
+        if q:
+            for reg in self.project.regions:
+                if q in reg.name.lower():
+                    order.append(("region", reg.id))
+                for ref in reg.images:
+                    if q in ref.display_name.lower() or q in os.path.basename(ref.path).lower():
+                        order.append(("image", ref.id))
+        self._search_order, self._search_pos = order, -1
+        self.canvas.set_search({i for k, i in order if k == "image"}, {i for k, i in order if k == "region"})
+        if not q:
+            return
+        if order:
+            self.status(tr("Found {i} image(s) and {r} region(s) — Enter: next, Shift+Enter: previous, Esc: clear",
+                           i=len(self.canvas.search_hits), r=len(self.canvas.search_regions)), 15000)
+        else:
+            self.status(tr("No matches for '{q}'", q=text.strip()))
+
+    def search_next(self, step: int):
+        if not self._search_order:
+            self.run_search(self.search_box.text())
+            if not self._search_order:
+                return
+        self._search_pos = (self._search_pos + step) % len(self._search_order)
+        kind, key = self._search_order[self._search_pos]
+        if kind == "region":
+            self.activate_region(key)
+            self.fit_region(key)
+        else:
+            reg, _ = self.project.find(key)
+            if reg is None:
+                return
+            if reg.collapsed:  # show the hit
+                reg.collapsed = False
+                self.refresh()
+            self.activate_region(reg.id)
+            self.canvas.set_selection([key])
+            self.canvas.reveal(key)
+        self.status(tr("Search result {i} / {n}", i=self._search_pos + 1, n=len(self._search_order)), 15000)
 
     def apply_toolbar_icons(self):
         for obj, name, color in self._tb_icons:
             obj.setIcon(icon(name, color or theme.current().icon, gap=6))
+        for key, name in self.MENU_ICONS.items():
+            self.A[key].setIcon(icon(name, theme.current().icon, 16))
+        self.search_icon.setIcon(icon("search", theme.current().subtext, 16))
 
     def _build_view_extras(self):
         self.sidebar_action = QAction(tr("Sidebar"), self)
@@ -306,7 +426,15 @@ class MainWindow(QMainWindow):
         self.addAction(self.sidebar_action)
         self.view_menu.addSeparator()
         self.view_menu.addAction(self.sidebar_action)
+        self.tips_action = QAction(tr("Show Tips"), self)
+        self.tips_action.setCheckable(True)
+        self.tips_action.triggered.connect(lambda on: self.set_tips_visible(on))
+        self.view_menu.addAction(self.tips_action)
+        all_tips = QAction(icon("lightbulb", "#f59e0b", 16), tr("All Tips…"), self)
+        all_tips.triggered.connect(lambda: self.show_tip_dialog(0))
+        self.view_menu.addAction(all_tips)
         self.set_sidebar_visible(self.settings.value("ui/sidebar", True, type=bool))
+        self.set_tips_visible(self.settings.value("ui/tips", True, type=bool), announce=False)
         am = self.view_menu.addMenu(tr("Thumbnail Shape"))
         self._aspect_actions = {}
         grp = QActionGroup(self)
@@ -345,6 +473,20 @@ class MainWindow(QMainWindow):
         self.sidebar_action.setChecked(on)
         self.settings.setValue("ui/sidebar", bool(on))
 
+    def set_tips_visible(self, on: bool, announce: bool = True):
+        self.sidebar.tip_card.setVisible(on)
+        self.tips_action.setChecked(on)
+        self.settings.setValue("ui/tips", bool(on))
+        if not on and announce:
+            self.status(tr("Tips are off — View → Show Tips turns them back on"))
+
+    def show_tip_dialog(self, index: int = 0):
+        dlg = TipDialog(self, index, self.tips_action.isChecked())
+        exec_dialog(dlg)
+        if dlg.show_tips.isChecked() != self.tips_action.isChecked():
+            self.set_tips_visible(dlg.show_tips.isChecked())
+        self.sidebar.next_tip(dlg.index)
+
     def set_ui_theme(self, name: str):
         """Switch light/dark immediately (palette, toolbar icons, canvas)."""
         t = theme.set_theme(name)
@@ -353,9 +495,9 @@ class MainWindow(QMainWindow):
         app.setPalette(theme.palette(t))
         app.setStyleSheet(theme.stylesheet(t))
         self.apply_toolbar_icons()
+        self.apply_status_icons()
         self.sidebar.apply_theme()
-        self.canvas.scene().update()
-        self.canvas.viewport().update()
+        self.canvas.repaint_all_items()
 
     def set_thumb_aspect(self, key: str):
         self.project.thumb_aspect, self.project.aspect_auto = key, False
@@ -375,13 +517,83 @@ class MainWindow(QMainWindow):
                                 "The new language is applied after restarting the program.")
 
     def _build_status(self):
+        """Left: selection info (temporary messages cover it briefly).
+        Right: hand tool, zoom − slider + percentage, fit to screen."""
         sb = self.statusBar()
-        self.lbl_counts = QLabel()
-        self.lbl_thumb = QLabel()
+        self.lbl_info = QLabel()
+        self.lbl_info.setContentsMargins(8, 0, 8, 0)
+        sb.addWidget(self.lbl_info, 1)
+        box = QWidget()
+        row = QHBoxLayout(box)
+        row.setContentsMargins(0, 0, 6, 0)
+        row.setSpacing(4)
+        self.hand_btn = QToolButton()
+        self.hand_btn.setCheckable(True)
+        self.hand_btn.setAutoRaise(True)
+        self.hand_btn.setToolTip(tr("Hand tool: drag with the left button to move around (Space+drag also works)"))
+        self.hand_btn.toggled.connect(self.canvas.set_hand_tool)
+        self.zoom_out_btn = QToolButton()
+        self.zoom_out_btn.setAutoRaise(True)
+        self.zoom_out_btn.setToolTip(tr("Zoom out"))
+        self.zoom_out_btn.clicked.connect(lambda: self.canvas.zoom_by(1 / 1.25, centered=True))
+        self.zoom_slider = QSlider(Qt.Horizontal)
+        self.zoom_slider.setRange(0, 1000)
+        self.zoom_slider.setFixedWidth(130)
+        self.zoom_slider.setToolTip(tr("Canvas zoom"))
+        self.zoom_slider.valueChanged.connect(self._zoom_slider_moved)
+        self.zoom_in_btn = QToolButton()
+        self.zoom_in_btn.setAutoRaise(True)
+        self.zoom_in_btn.setToolTip(tr("Zoom in"))
+        self.zoom_in_btn.clicked.connect(lambda: self.canvas.zoom_by(1.25, centered=True))
         self.lbl_zoom = QLabel()
-        for w in (self.lbl_counts, self.lbl_thumb, self.lbl_zoom):
-            w.setContentsMargins(8, 0, 8, 0)
-            sb.addPermanentWidget(w)
+        self.lbl_zoom.setMinimumWidth(44)
+        self.lbl_zoom.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.fit_btn = QPushButton(tr("Fit to Screen"))
+        self.fit_btn.setObjectName("StatusButton")
+        self.fit_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.fit_btn.clicked.connect(self.canvas.fit_all)
+        for w in (self.hand_btn, self.zoom_out_btn, self.zoom_slider, self.zoom_in_btn, self.lbl_zoom):
+            row.addWidget(w)
+        row.addSpacing(8)
+        row.addWidget(self.fit_btn)
+        box.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
+        sb.addPermanentWidget(box)
+        self._file_info_cache: dict[str, tuple[str, str]] = {}
+        self.apply_status_icons()
+
+    def apply_status_icons(self):
+        col = theme.current().icon
+        self.hand_btn.setIcon(icon("hand", col, 18))
+        self.zoom_out_btn.setIcon(icon("minus", col, 16))
+        self.zoom_in_btn.setIcon(icon("plus", col, 16))
+
+    # zoom slider <-> canvas zoom (logarithmic so small zoom levels get room)
+    def _zoom_to_slider(self, z: float) -> int:
+        lo, hi = math.log(ZOOM_MIN), math.log(ZOOM_MAX)
+        return round((math.log(max(min(z, ZOOM_MAX), ZOOM_MIN)) - lo) / (hi - lo) * 1000)
+
+    def _zoom_slider_moved(self, v: int):
+        lo, hi = math.log(ZOOM_MIN), math.log(ZOOM_MAX)
+        z = math.exp(lo + (hi - lo) * v / 1000)
+        if abs(z - self.canvas.zoom()) / self.canvas.zoom() > 0.004:
+            self.canvas.set_zoom(z)
+
+    def _file_info(self, path: str) -> tuple[str, str]:
+        """('W × H', '2.4 MB') for the status bar; header read only, cached."""
+        if path not in self._file_info_cache:
+            size = self.thumbs.original_size(path)
+            if size is None or not size.isValid():
+                reader = QImageReader(path)
+                reader.setAutoTransform(True)
+                size = reader.size()
+            dims = f"{size.width()} × {size.height()}" if size.isValid() else ""
+            try:
+                b = os.path.getsize(path)
+                mb = f"{b / 1048576:.1f} MB" if b >= 1048576 else f"{b / 1024:.0f} KB"
+            except OSError:
+                mb = tr("missing file")
+            self._file_info_cache[path] = (dims, mb)
+        return self._file_info_cache[path]
 
     # ============================================================ state glue
     def status(self, msg: str, ms: int = 6000):
@@ -414,15 +626,28 @@ class MainWindow(QMainWindow):
         self.update_title()
 
     def _update_status(self):
-        n_sel = len(self.canvas.selected_thumbs())
-        self.lbl_counts.setText(tr("Regions: {r}   Images: {i}   Selected: {s}", r=len(self.project.regions),
-                                   i=self.project.image_count(), s=n_sel))
-        self.lbl_thumb.setText(tr("Thumbnail: {n}px", n=self.project.thumb_size))
-        self.lbl_zoom.setText(tr("Zoom: {n}%", n=round(self.canvas.zoom() * 100)))
+        sep = "   |   "
+        reg = self.project.region(self.active_region_id)
+        parts = [tr("Selected region: {name}", name=reg.name) if reg else
+                 tr("Regions: {r}   Images: {i}", r=len(self.project.regions), i=self.project.image_count())]
+        refs = self.selected_refs()
+        if len(refs) == 1:
+            path = refs[0][1].path
+            parts.append(tr("1 image selected ({name})", name=os.path.basename(path)))
+            dims, mb = self._file_info(path)
+            parts += [p for p in (dims, mb) if p]
+        elif refs:
+            parts.append(tr("{n} images selected", n=len(refs)))
+        self.lbl_info.setText(sep.join(parts))
+        z = self.canvas.zoom()
+        self.lbl_zoom.setText(f"{round(z * 100)}%")
+        self.zoom_slider.blockSignals(True)
+        self.zoom_slider.setValue(self._zoom_to_slider(z))
+        self.zoom_slider.blockSignals(False)
 
     def update_title(self):
-        name = os.path.basename(self.project_path) if self.project_path else tr("Untitled")
-        self.setWindowTitle(f"{name}{' *' if self.dirty else ''} — {APP_NAME}")
+        name = os.path.splitext(os.path.basename(self.project_path))[0] if self.project_path else tr("Untitled")
+        self.setWindowTitle(f"{APP_NAME} - {tr('Project')}: {name}{' *' if self.dirty else ''}")
 
     def set_dirty(self):
         self.dirty = True
@@ -688,6 +913,21 @@ class MainWindow(QMainWindow):
         self.checkpoint()
         self.project.regions.remove(reg)
         self.refresh()
+
+    def toggle_region_scroll(self, rid):
+        """Open item (spec §38): fixed region height with scrolling inside."""
+        reg = self.project.region(rid)
+        if not reg:
+            return
+        self.checkpoint()
+        if not reg.scroll_enabled:
+            _, ch = self.project.cell()
+            reg.h = min(self._region_display_rect(reg).height(), TITLE_H + 2 * PAD + 2.2 * ch)
+            reg.scroll = 0.0
+        reg.scroll_enabled = not reg.scroll_enabled
+        self.refresh()
+        self.status(tr("Scrolling inside '{name}': Shift+Wheel or the scrollbar on the right", name=reg.name)
+                    if reg.scroll_enabled else tr("'{name}' grows with its images again", name=reg.name))
 
     def toggle_collapse(self, rid):
         reg = self.project.region(rid)
@@ -1080,16 +1320,25 @@ class MainWindow(QMainWindow):
         self.status(tr("Locked images 1–{n} of '{name}'", n=n, name=reg.name))
 
     # ======================================================== context menus
-    def _region_submenu(self, parent: QMenu, title: str, copy_: bool, exclude: set[str]):
-        sm = parent.addMenu(title)
+    def _mi(self, menu: QMenu, text: str, slot, ic: str | None = None, sc=None, color: str | None = None):
+        """Menu entry with an icon and the shortcut shown on the right (display only)."""
+        if sc is not None:
+            seq = sc if isinstance(sc, QKeySequence) else QKeySequence(sc)
+            text = f"{text}\t{seq.toString(QKeySequence.NativeText)}"
+        a = menu.addAction(text, slot)
+        if ic:
+            a.setIcon(icon(ic, color or theme.current().icon, 16))
+        return a
+
+    def _region_submenu(self, parent: QMenu, title: str, copy_: bool, exclude: set[str], ic: str):
+        sm = parent.addMenu(icon(ic, theme.current().icon, 16), title)
         for reg in self.project.regions:
             if reg.id in exclude and not copy_:
                 continue
             a = sm.addAction(_swatch(reg.color), reg.name)
             a.triggered.connect(lambda _=False, rid=reg.id: self.move_or_copy_to(rid, copy_))
         sm.addSeparator()
-        a = sm.addAction(tr("New Region"))
-        a.triggered.connect(lambda: self.move_or_copy_to(None, copy_))
+        self._mi(sm, tr("New Region"), lambda: self.move_or_copy_to(None, copy_), "square-plus")
 
     def image_menu(self, gpos, ref_id: str):
         refs = self.selected_refs()
@@ -1097,32 +1346,34 @@ class MainWindow(QMainWindow):
         reg, ref = self.project.find(ref_id)
         if ref is None:
             return
+        mi = self._mi
         m = QMenu(self)
-        m.addAction(tr("Open Large View"), lambda: self.open_viewer(ref_id))
+        mi(m, tr("Open Large View"), lambda: self.open_viewer(ref_id), "maximize-2", tr("Double-click"))
         m.addSeparator()
-        m.addAction(tr("Cut ({n})", n=n), self.cut_selection)
-        m.addAction(tr("Copy ({n})", n=n), self.copy_selection)
-        m.addAction(tr("Paste After This Image"), lambda: self.paste(reg.id, ref_id))
+        mi(m, tr("Cut ({n})", n=n), self.cut_selection, "scissors", QKeySequence.Cut)
+        mi(m, tr("Copy ({n})", n=n), self.copy_selection, "copy", QKeySequence.Copy)
+        mi(m, tr("Paste After This Image"), lambda: self.paste(reg.id, ref_id), "clipboard-paste", QKeySequence.Paste)
         m.addSeparator()
-        m.addAction(tr("Lock ({n})", n=n), lambda: self.set_locked(True))
-        m.addAction(tr("Unlock ({n})", n=n), lambda: self.set_locked(False))
-        m.addAction(tr("Lock Up To Here (Confirmed Portion)"), lambda: self.lock_up_to_selection(reg.id, ref_id))
+        mi(m, tr("Lock ({n})", n=n), lambda: self.set_locked(True), "lock", "Ctrl+L", "#f59e0b")
+        mi(m, tr("Unlock ({n})", n=n), lambda: self.set_locked(False), "lock-open", "Ctrl+Shift+L")
+        mi(m, tr("Lock Up To Here (Confirmed Portion)"), lambda: self.lock_up_to_selection(reg.id, ref_id), "lock")
         m.addSeparator()
         regions_of_sel = {g.id for g, _ in refs}
-        self._region_submenu(m, tr("Move to Another Region"), False, regions_of_sel)
-        self._region_submenu(m, tr("Copy to Another Region"), True, set())
+        self._region_submenu(m, tr("Move to Another Region"), False, regions_of_sel, "arrow-right-left")
+        self._region_submenu(m, tr("Copy to Another Region"), True, set(), "copy-plus")
         m.addSeparator()
-        m.addAction(tr("Change Display Name…"), self.change_display_name)
+        mi(m, tr("Change Display Name…"), self.change_display_name, "tag")
         if n > 1:
-            m.addAction(tr("Rename Actual Files by Order ({n})…", n=n), self.bulk_rename_selection)
+            mi(m, tr("Rename Actual Files by Order ({n})…", n=n), self.bulk_rename_selection, "file-pen-line")
         else:
-            m.addAction(tr("Rename Actual File…"), lambda: self.rename_actual_file(ref_id))
-        m.addAction(tr("Move Actual File(s) to Folder ({n})…", n=n),
-                    lambda: self.move_actual_files([r.path for _, r in self.selected_refs()]))
-        m.addAction(tr("Open Source File Location"), lambda: self.reveal(ref_id))
+            mi(m, tr("Rename Actual File…"), lambda: self.rename_actual_file(ref_id), "file-pen-line")
+        mi(m, tr("Move Actual File(s) to Folder ({n})…", n=n),
+           lambda: self.move_actual_files([r.path for _, r in self.selected_refs()]), "folder-input")
+        mi(m, tr("Open Source File Location"), lambda: self.reveal(ref_id), "folder-open")
         m.addSeparator()
-        m.addAction(tr("Remove from Current Region ({n})", n=n), self.remove_selection)
-        da = m.addAction(tr("Delete Actual Source File(s) ({n})…", n=n), self.delete_actual_files)
+        mi(m, tr("Remove from Current Region ({n})", n=n), self.remove_selection, "eraser", QKeySequence.Delete)
+        da = mi(m, tr("Delete Actual Source File(s) ({n})…", n=n), self.delete_actual_files, "trash-2",
+                color="#e05252")
         f = da.font()
         f.setBold(True)
         da.setFont(f)
@@ -1132,57 +1383,67 @@ class MainWindow(QMainWindow):
         reg = self.project.region(rid)
         if reg is None:
             return
+        mi = self._mi
         m = QMenu(self)
-        m.addAction(tr("Import Image(s)…"), lambda: self.import_dialog(True))
-        m.addAction(tr("Import Folder…"), lambda: self.import_folder_dialog(False))
-        m.addAction(tr("Paste"), lambda: self.paste(rid))
-        m.addAction(tr("Select All in Region"), lambda: self.canvas.set_selection([r.id for r in reg.images]))
+        mi(m, tr("Import Image(s)…"), lambda: self.import_dialog(True), "image-plus", "Ctrl+I")
+        mi(m, tr("Import Folder…"), lambda: self.import_folder_dialog(False), "folder-plus", "Ctrl+Shift+I",
+           "#f59e0b")
+        mi(m, tr("Paste"), lambda: self.paste(rid), "clipboard-paste", QKeySequence.Paste)
+        mi(m, tr("Select All in Region"), lambda: self.canvas.set_selection([r.id for r in reg.images]),
+           "list-checks", QKeySequence.SelectAll)
         m.addSeparator()
-        m.addAction(tr("Rename Region…"), lambda: self.rename_region(rid))
-        cm = m.addMenu(tr("Region Color"))
+        mi(m, tr("Rename Region…"), lambda: self.rename_region(rid), "pencil", "F2")
+        cm = m.addMenu(icon("palette", "#8b5cf6", 16), tr("Region Color"))
         self._fill_color_menu(cm, rid)
-        a = m.addAction(tr("Auto-Arrange"), lambda: self.toggle_auto(rid))
+        a = mi(m, tr("Auto-Arrange"), lambda: self.toggle_auto(rid), "arrow-down-up", "Ctrl+E", "#3b82f6")
         a.setCheckable(True)
         a.setChecked(reg.auto_arrange)
-        m.addAction(tr("Expand") if reg.collapsed else tr("Collapse"), lambda: self.toggle_collapse(rid))
+        a = mi(m, tr("Scroll Inside Region (fixed height)"), lambda: self.toggle_region_scroll(rid), "scroll-text")
+        a.setCheckable(True)
+        a.setChecked(reg.scroll_enabled)
+        mi(m, tr("Expand") if reg.collapsed else tr("Collapse"), lambda: self.toggle_collapse(rid),
+           "chevrons-up-down" if reg.collapsed else "chevrons-down-up")
+        mi(m, tr("Fit Selected Region"), lambda: self.fit_region(rid), "maximize-2", "Ctrl+9")
         m.addSeparator()
-        m.addAction(tr("Lock Selected Images"), lambda: self.set_locked(True))
-        m.addAction(tr("Lock Current Organized Portion (up to last selected)"),
-                    lambda: self.lock_up_to_selection(rid))
-        m.addAction(tr("Lock Entire Region"), lambda: self.lock_region(rid, True))
-        m.addAction(tr("Unlock All"), lambda: self.lock_region(rid, False))
+        mi(m, tr("Lock Selected Images"), lambda: self.set_locked(True), "lock", "Ctrl+L", "#f59e0b")
+        mi(m, tr("Lock Current Organized Portion (up to last selected)"), lambda: self.lock_up_to_selection(rid),
+           "lock")
+        mi(m, tr("Lock Entire Region"), lambda: self.lock_region(rid, True), "lock")
+        mi(m, tr("Unlock All"), lambda: self.lock_region(rid, False), "lock-open")
         m.addSeparator()
         if not reg.auto_arrange:
-            m.addAction(tr("Arrange Images Inside Region (grid)"), lambda: self.regrid(rid))
-            m.addAction(tr("Set Order from Visual Position"), lambda: self.adopt_visual_order(rid))
+            mi(m, tr("Arrange Images Inside Region (grid)"), lambda: self.regrid(rid), "layout-grid")
+            mi(m, tr("Set Order from Visual Position"), lambda: self.adopt_visual_order(rid), "rows-3")
             m.addSeparator()
-        m.addAction(tr("Save Region…"), lambda: self.save_region(rid))
-        m.addAction(tr("Duplicate Region"), lambda: self.duplicate_region(rid))
-        m.addAction(tr("Rename Actual Files by Order…"), lambda: self.bulk_rename_region(rid))
-        m.addAction(tr("Move Actual Files of Region to Folder…"),
-                    lambda: self.move_actual_files([r.path for r in reg.images]))
+        mi(m, tr("Save Region…"), lambda: self.save_region(rid), "save", color="#4f6bed")
+        mi(m, tr("Duplicate Region"), lambda: self.duplicate_region(rid), "copy-plus")
+        mi(m, tr("Rename Actual Files by Order…"), lambda: self.bulk_rename_region(rid), "file-pen-line")
+        mi(m, tr("Move Actual Files of Region to Folder…"),
+           lambda: self.move_actual_files([r.path for r in reg.images]), "folder-input")
         m.addSeparator()
-        m.addAction(tr("Clear Region…"), lambda: self.clear_region(rid))
-        m.addAction(tr("Delete Region…"), lambda: self.delete_region(rid))
+        mi(m, tr("Clear Region…"), lambda: self.clear_region(rid), "eraser")
+        mi(m, tr("Delete Region…"), lambda: self.delete_region(rid), "trash-2", color="#e05252")
         exec_menu(m, gpos)
 
     def canvas_menu(self, gpos, scene_pt: QPointF):
+        mi = self._mi
         m = QMenu(self)
-        m.addAction(tr("New Region Here"), lambda: self.new_region(scene_pt))
-        m.addAction(tr("Load Saved Region Here…"), lambda: self.load_region(scene_pt))
-        m.addAction(tr("Paste (into a new region here)"), lambda: self.paste(None, None, scene_pt)
-                    if self.clipboard or QApplication.clipboard().mimeData().hasUrls()
-                    else self.status(tr("Clipboard is empty")))
-        m.addAction(tr("Import Image(s) (new region here)…"), lambda: self._import_new_region(scene_pt))
-        m.addAction(tr("Import Folder (new region here)…"), lambda: self.import_folder_dialog(False, scene_pt))
+        mi(m, tr("New Region Here"), lambda: self.new_region(scene_pt), "square-plus", "Ctrl+R", "#10b981")
+        mi(m, tr("Load Saved Region Here…"), lambda: self.load_region(scene_pt), "folder-input")
+        mi(m, tr("Paste (into a new region here)"), lambda: self.paste(None, None, scene_pt)
+           if self.clipboard or QApplication.clipboard().mimeData().hasUrls()
+           else self.status(tr("Clipboard is empty")), "clipboard-paste", QKeySequence.Paste)
+        mi(m, tr("Import Image(s) (new region here)…"), lambda: self._import_new_region(scene_pt), "image-plus")
+        mi(m, tr("Import Folder (new region here)…"), lambda: self.import_folder_dialog(False, scene_pt),
+           "folder-plus", color="#f59e0b")
         m.addSeparator()
-        m.addAction(self.A["arr_h"])
-        m.addAction(self.A["arr_v"])
-        m.addAction(self.A["arr_g"])
+        mi(m, tr("Arrange Regions Horizontally"), lambda: self.arrange_regions("h"), "columns-3")
+        mi(m, tr("Arrange Regions Vertically"), lambda: self.arrange_regions("v"), "rows-3")
+        mi(m, tr("Arrange Regions as Grid"), lambda: self.arrange_regions("g"), "layout-grid")
         m.addSeparator()
-        m.addAction(tr("Fit All to Screen"), self.canvas.fit_all)
-        m.addAction(self.A["collapse_all"])
-        m.addAction(self.A["expand_all"])
+        mi(m, tr("Fit All to Screen"), self.canvas.fit_all, "scan", "Ctrl+0")
+        mi(m, tr("Collapse All Regions"), lambda: self.collapse_all(True), "chevrons-down-up")
+        mi(m, tr("Expand All Regions"), lambda: self.collapse_all(False), "chevrons-up-down")
         exec_menu(m, gpos)
 
     def _import_new_region(self, at: QPointF):
@@ -1290,9 +1551,9 @@ class MainWindow(QMainWindow):
             fileops.write_rename_log(os.path.join(self.data_dir, "rename_logs"), pairs)
             self._after_fs_rename(pairs, tr("Renamed {n} file(s)", n=len(pairs)))
 
-    def _confirm(self, title: str, text: str, ok_label: str) -> bool:
+    def _confirm(self, title: str, text: str, ok_label: str, destructive: bool = False) -> bool:
         box = QMessageBox(QMessageBox.Warning, title, text, QMessageBox.Cancel, self)
-        ok = box.addButton(ok_label, QMessageBox.AcceptRole)
+        ok = box.addButton(ok_label, QMessageBox.DestructiveRole if destructive else QMessageBox.AcceptRole)
         box.setDefaultButton(QMessageBox.Cancel)
         box.exec()
         return box.clickedButton() is ok
@@ -1365,14 +1626,11 @@ class MainWindow(QMainWindow):
         others = sum(1 for _, r in self.project.all_refs() if r.path in set(paths)) - len(refs)
         listing = "\n".join(os.path.basename(p) for p in paths[:12]) + ("\n…" if len(paths) > 12 else "")
         extra = tr(" (including {n} copy/copies in other regions)", n=others) if others > 0 else ""
-        box = QMessageBox(QMessageBox.Warning, tr("Delete Actual Source Files"),
-                          tr("Move {n} file(s) on disk to the Recycle Bin?\n\n{listing}\n\n"
-                             "All references to these files in this project are removed{extra}.",
-                             n=len(paths), listing=listing, extra=extra), QMessageBox.Cancel, self)
-        ok = box.addButton(tr("Move to Recycle Bin"), QMessageBox.DestructiveRole)
-        box.setDefaultButton(QMessageBox.Cancel)
-        box.exec()
-        if box.clickedButton() is not ok:
+        if not self._confirm(tr("Delete Actual Source Files"),
+                             tr("Move {n} file(s) on disk to the Recycle Bin?\n\n{listing}\n\n"
+                                "All references to these files in this project are removed{extra}.",
+                                n=len(paths), listing=listing, extra=extra),
+                             tr("Move to Recycle Bin"), destructive=True):
             return
         failed = []
         deleted = set()

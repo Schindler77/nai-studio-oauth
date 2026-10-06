@@ -9,16 +9,8 @@ from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QListWidget, QListWi
 from . import theme
 from .i18n import tr
 from .icons import icon
+from .tips import TIPS
 
-TIPS = [
-    "Drag images into the order you want. With Auto-Arrange ON, the other images "
-    "move aside and the row stays in order.",
-    "Lock the images you have confirmed (Ctrl+L). New imports never push them around.",
-    "Double-click a thumbnail to see it large. Wheel zooms, 100% shows real pixels.",
-    "Ctrl+Wheel changes the thumbnail size; the wheel alone zooms the canvas.",
-    "Right-click while dragging cancels the move and puts everything back.",
-    "Save a region on its own (⋯ → Save Region) and load it into another project.",
-]
 
 
 class MiniMap(QWidget):
@@ -190,26 +182,41 @@ class Sidebar(QWidget):
         lay.addWidget(self.list, 1)
         outer.addWidget(card, 1)
 
-        card, lay, head = _card()
-        row = QHBoxLayout()
+        # tip card: grey text; ‹ › browse, × turns tips off, click = illustrated popup
+        self.tip_card, lay, head = _card()
+        head = QHBoxLayout()
         self.tip_icon = QLabel()
         self.tip_icon.setFixedWidth(22)
-        self.tip_icon.setAlignment(Qt.AlignTop)
-        row.addWidget(self.tip_icon)
-        col = QVBoxLayout()
+        head.addWidget(self.tip_icon)
         title = QLabel(tr("Tip"))
         title.setObjectName("SidebarTitle")
-        col.addWidget(title)
+        head.addWidget(title)
+        head.addStretch(1)
+        self.tip_prev = QToolButton()
+        self.tip_next = QToolButton()
+        self.tip_close = QToolButton()
+        for b, tip_text in ((self.tip_prev, tr("Previous tip")), (self.tip_next, tr("Next tip")),
+                            (self.tip_close, tr("Hide tips (View → Show Tips)"))):
+            b.setAutoRaise(True)
+            b.setToolTip(tip_text)
+            head.addWidget(b)
+        self.tip_prev.clicked.connect(lambda: self.next_tip(self._tip_i - 1))
+        self.tip_next.clicked.connect(lambda: self.next_tip())
+        self.tip_close.clicked.connect(lambda: ctrl.set_tips_visible(False))
+        lay.addLayout(head)
         self.tip = QLabel()
         self.tip.setObjectName("SidebarTip")
         self.tip.setWordWrap(True)
         self.tip.setCursor(Qt.PointingHandCursor)
-        self.tip.setToolTip(tr("Click for the next tip"))
-        self.tip.mousePressEvent = lambda e: self.next_tip()
-        col.addWidget(self.tip)
-        row.addLayout(col, 1)
-        lay.addLayout(row)
-        outer.addWidget(card)
+        self.tip.setToolTip(tr("Click to see this tip as a picture"))
+        self.tip.mousePressEvent = lambda e: ctrl.show_tip_dialog(self._tip_i)
+        lay.addWidget(self.tip)
+        self.tip_link = QLabel(tr("See it as a picture ›"))
+        self.tip_link.setObjectName("TipLink")
+        self.tip_link.setCursor(Qt.PointingHandCursor)
+        self.tip_link.mousePressEvent = lambda e: ctrl.show_tip_dialog(self._tip_i)
+        lay.addWidget(self.tip_link, 0, Qt.AlignRight)
+        outer.addWidget(self.tip_card)
         self._tip_i = 0
         self.next_tip(0)
         self.apply_theme()
@@ -218,12 +225,15 @@ class Sidebar(QWidget):
         t = theme.current()
         self.close_btn.setIcon(icon("x", t.icon, 16))
         self.add_btn.setIcon(icon("plus", t.icon, 18))
-        self.tip_icon.setPixmap(icon("lightbulb", t.icon, 18).pixmap(18, 18))
+        self.tip_icon.setPixmap(icon("lightbulb", "#f59e0b", 18).pixmap(18, 18))
+        self.tip_prev.setIcon(icon("chevron-left", t.icon, 16))
+        self.tip_next.setIcon(icon("chevron-right", t.icon, 16))
+        self.tip_close.setIcon(icon("x", t.icon, 14))
         self.update()
 
     def next_tip(self, i: int | None = None) -> None:
-        self._tip_i = (self._tip_i + 1) % len(TIPS) if i is None else i
-        self.tip.setText(tr(TIPS[self._tip_i]))
+        self._tip_i = (self._tip_i + 1 if i is None else i) % len(TIPS)
+        self.tip.setText(tr(TIPS[self._tip_i]["text"]))
 
     def refresh(self) -> None:
         ctrl = self.ctrl
