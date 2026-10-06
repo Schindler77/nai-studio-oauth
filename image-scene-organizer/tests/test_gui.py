@@ -771,12 +771,13 @@ def test_region_internal_scrolling(win, tmp_path):
     first = win.canvas.thumb_items[reg.images[0].id]
     win.canvas.scroll_region(reg, -1e6)
     win.canvas.scroll_region(reg, PAD + first.img_h * 0.6)  # first row half under the header
-    win.canvas.set_zoom(1.0, ri.sceneBoundingRect().center())
+    win.canvas.fit_rect(ri.sceneBoundingRect())  # whole card on screen, any window size
     pump(100)
-    assert first.isVisible()
+    assert first.isVisible() and win.canvas.zoom() > 0.35  # detailed painting (rounded clip) is in use
     img = win.canvas.viewport().grab().toImage()
     over = win.canvas.mapFromScene(ri.mapToScene(QPointF(first.pos().x() + first.cw / 2, TITLE_H - 6)))
     clear = win.canvas.mapFromScene(ri.mapToScene(QPointF(6, TITLE_H - 6)))
+    assert img.rect().contains(over) and img.rect().contains(clear)
     assert first.pos().y() < TITLE_H  # it really is scrolled up under the header
     assert img.pixelColor(over) == img.pixelColor(clear)
     # reveal scrolls back to an image
