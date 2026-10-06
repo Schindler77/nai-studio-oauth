@@ -8,9 +8,9 @@ import time
 
 from PySide6.QtCore import QPointF, QRectF, QSettings, QSize, QStandardPaths, Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QColor, QIcon, QImageReader, QKeySequence, QPixmap
-from PySide6.QtWidgets import (QApplication, QColorDialog, QDockWidget, QFileDialog,
-                               QInputDialog, QLabel, QListWidget, QListWidgetItem, QMainWindow,
-                               QMenu, QMessageBox, QToolButton)
+from PySide6.QtWidgets import (QApplication, QColorDialog, QFileDialog, QHBoxLayout,
+                               QInputDialog, QLabel, QMainWindow, QMenu, QMessageBox,
+                               QToolButton, QWidget)
 
 from . import fileops
 from .i18n import LANGUAGES, language, tr
@@ -23,6 +23,7 @@ from .model import (ASPECTS, PRESET_COLORS, PROJECT_EXT, REGION_EXT, THUMB_DEFAU
                     default_region_size, grid_cols, grid_pos, load_json, norm_path,
                     region_file_dict, region_from_file_dict, save_json_atomic)
 from .thumbs import ThumbnailCache
+from .sidebar import Sidebar
 from .viewer import ImageViewer
 
 APP_NAME = "Image Scene Organizer"
@@ -76,14 +77,25 @@ class MainWindow(QMainWindow):
         self._open_path = open_path
 
         self.canvas = Canvas(self, self.thumbs)
-        self.setCentralWidget(self.canvas)
+        self.sidebar = Sidebar(self)
+        central = QWidget()
+        row = QHBoxLayout(central)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(0)
+        row.addWidget(self.sidebar)
+        row.addWidget(self.canvas, 1)
+        self.setCentralWidget(central)
+        self.canvas.horizontalScrollBar().valueChanged.connect(self.sidebar.minimap.update)
+        self.canvas.verticalScrollBar().valueChanged.connect(self.sidebar.minimap.update)
+        self.canvas.zoomChanged.connect(lambda _: self.sidebar.minimap.update())
+        self.sidebar.closeRequested.connect(lambda: self.set_sidebar_visible(False))
         self.canvas.scene().selectionChanged.connect(self.on_selection_changed)
         self.canvas.zoomChanged.connect(lambda _: self._update_status())
 
         self._build_actions()
         self._build_menus()
         self._build_toolbar()
-        self._build_dock()
+        self._build_view_extras()
         self._build_status()
 
         self.autosave_timer = QTimer(self)
@@ -286,19 +298,15 @@ class MainWindow(QMainWindow):
         for obj, name, color in self._tb_icons:
             obj.setIcon(icon(name, color or theme.current().icon, gap=6))
 
-    def _build_dock(self):
-        self.region_list = QListWidget()
-        self.region_list.itemClicked.connect(self._region_list_clicked)
-        self.region_list.itemDoubleClicked.connect(lambda it: self.fit_region(it.data(Qt.UserRole)))
-        dock = QDockWidget(tr("Regions"), self)
-        dock.setObjectName("regions_dock")
-        dock.setWidget(self.region_list)
-        self.addDockWidget(Qt.LeftDockWidgetArea, dock)
-        dock.hide()  # open item: is a permanent region list needed?
-        act = dock.toggleViewAction()
-        act.setText(tr("Region List Sidebar"))
+    def _build_view_extras(self):
+        self.sidebar_action = QAction(tr("Sidebar"), self)
+        self.sidebar_action.setCheckable(True)
+        self.sidebar_action.setShortcut(QKeySequence("Ctrl+B"))
+        self.sidebar_action.triggered.connect(lambda on: self.set_sidebar_visible(on))
+        self.addAction(self.sidebar_action)
         self.view_menu.addSeparator()
-        self.view_menu.addAction(act)
+        self.view_menu.addAction(self.sidebar_action)
+        self.set_sidebar_visible(self.settings.value("ui/sidebar", True, type=bool))
         am = self.view_menu.addMenu(tr("Thumbnail Shape"))
         self._aspect_actions = {}
         grp = QActionGroup(self)
@@ -332,6 +340,11 @@ class MainWindow(QMainWindow):
             la.setChecked(code == language())
             la.triggered.connect(lambda _=False, c=code: self.set_ui_language(c))
 
+    def set_sidebar_visible(self, on: bool):
+        self.sidebar.setVisible(on)
+        self.sidebar_action.setChecked(on)
+        self.settings.setValue("ui/sidebar", bool(on))
+
     def set_ui_theme(self, name: str):
         """Switch light/dark immediately (palette, toolbar icons, canvas)."""
         t = theme.set_theme(name)
@@ -340,6 +353,7 @@ class MainWindow(QMainWindow):
         app.setPalette(theme.palette(t))
         app.setStyleSheet(theme.stylesheet(t))
         self.apply_toolbar_icons()
+        self.sidebar.apply_theme()
         self.canvas.scene().update()
         self.canvas.viewport().update()
 
@@ -395,7 +409,7 @@ class MainWindow(QMainWindow):
                 act.setChecked(key == self.project.thumb_aspect)
             for key, act in self._fill_actions.items():
                 act.setChecked(key == self.project.thumb_fill)
-        self._refresh_region_list()
+        self.sidebar.refresh()
         self._update_status()
         self.update_title()
 
@@ -417,25 +431,6 @@ class MainWindow(QMainWindow):
 
     def on_selection_changed(self):
         self._update_status()
-
-    def _refresh_region_list(self):
-        lw = self.region_list
-        lw.blockSignals(True)
-        lw.clear()
-        for reg in self.project.regions:
-            it = QListWidgetItem(_swatch(reg.color), f"{reg.name}  ({len(reg.images)})")
-            it.setData(Qt.UserRole, reg.id)
-            lw.addItem(it)
-            if reg.id == self.active_region_id:
-                it.setSelected(True)
-        lw.blockSignals(False)
-
-    def _region_list_clicked(self, it):
-        rid = it.data(Qt.UserRole)
-        self.activate_region(rid)
-        ri = self.canvas.region_items.get(rid)
-        if ri:
-            self.canvas.centerOn(ri.sceneBoundingRect().center())
 
     def activate_region(self, rid: str | None, toggle: bool = False):
         if toggle and rid:

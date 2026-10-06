@@ -112,7 +112,25 @@ KO: dict[str, str] = {
     "Lock": "잠금",
     "Unlock": "잠금 해제",
     "Regions": "영역 목록",
-    "Region List Sidebar": "영역 목록 사이드바",
+    "Sidebar": "사이드바",
+    "Canvas Preview": "캔버스 미리보기",
+    "Hide sidebar (View → Sidebar)": "사이드바 숨기기 (보기 → 사이드바)",
+    "Tip": "팁",
+    "Click for the next tip": "클릭하면 다음 팁을 보여 줍니다",
+    "Drag images into the order you want. With Auto-Arrange ON, the other images "
+    "move aside and the row stays in order.":
+        "이미지를 드래그하여 원하는 순서로 배치하세요. 영역의 자동 정렬이 켜져 있으면 "
+        "나머지 이미지가 알아서 밀려나 순서가 유지됩니다.",
+    "Lock the images you have confirmed (Ctrl+L). New imports never push them around.":
+        "확정한 이미지는 잠그세요 (Ctrl+L). 새로 가져와도 잠긴 이미지는 밀리지 않습니다.",
+    "Double-click a thumbnail to see it large. Wheel zooms, 100% shows real pixels.":
+        "썸네일을 더블클릭하면 크게 볼 수 있습니다. 휠로 확대하고, 100%는 실제 픽셀 크기입니다.",
+    "Ctrl+Wheel changes the thumbnail size; the wheel alone zooms the canvas.":
+        "Ctrl+휠은 썸네일 크기, 휠만 돌리면 캔버스 확대/축소입니다.",
+    "Right-click while dragging cancels the move and puts everything back.":
+        "드래그 중에 우클릭하면 이동이 취소되고 제자리로 돌아갑니다.",
+    "Save a region on its own (⋯ → Save Region) and load it into another project.":
+        "영역 하나만 따로 저장해서 (⋯ → 영역 저장) 다른 프로젝트에 불러올 수 있습니다.",
     "Regions: {r}   Images: {i}   Selected: {s}": "영역: {r}   이미지: {i}   선택: {s}",
     "Thumbnail: {n}px": "썸네일: {n}px",
     "Zoom: {n}%": "배율: {n}%",

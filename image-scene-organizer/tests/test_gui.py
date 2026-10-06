@@ -497,6 +497,9 @@ def test_korean_ui_is_complete(qapp, tmp_path, monkeypatch):
     for tb_action in w.findChildren(QToolButton):
         if tb_action.text():
             texts.append(tb_action.text())
+    from PySide6.QtWidgets import QLabel
+    texts += [lbl.text() for lbl in w.sidebar.findChildren(QLabel) if lbl.text()]
+    texts += [b.toolTip() for b in (w.sidebar.close_btn, w.sidebar.add_btn)]
     menus = []
     monkeypatch.setattr(mw_mod, "exec_menu", lambda m, pos: menus.append(m))
     w.image_menu(QPoint(0, 0), reg.images[0].id)
@@ -565,3 +568,51 @@ def test_card_header_switch_menu_and_appearance(win, tmp_path, monkeypatch):
     assert [r.locked for r in win.project.regions[0].images] == [True, True, False]
     win.toggle_lock_selection()
     assert not any(r.locked for r in win.project.regions[0].images)
+
+
+def test_sidebar_preview_list_and_tips(win, tmp_path, monkeypatch):
+    from PySide6.QtCore import Qt as _Qt
+    sb = win.sidebar
+    assert sb.isVisible()  # shown by default
+    make_images(str(tmp_path / "a"), 3)
+    win.new_region()
+    win.import_paths([str(tmp_path / "a")])
+    win.new_region()
+    regs = win.project.regions
+    pump()
+    # list mirrors the regions: name, colour, count, active row
+    assert sb.list.count() == 2
+    assert sb.list.item(0).text() == regs[0].name
+    assert sb.list.item(0).data(_Qt.UserRole + 2) == i18n.tr("{n} images", n=3)
+    assert sb.list.item(1).data(_Qt.UserRole + 3) is True  # the new region is active
+    # clicking a row activates and centres that region
+    win.canvas.centerOn(QPointF(50_000, 50_000))
+    rect = sb.list.visualItemRect(sb.list.item(0))
+    QTest.mouseClick(sb.list.viewport(), Qt.LeftButton, Qt.NoModifier, rect.center())
+    assert win.active_region_id == regs[0].id
+    assert win._region_display_rect(regs[0]).contains(win.canvas.view_center())
+    # + adds a region, right-click opens the region menu
+    QTest.mouseClick(sb.add_btn, Qt.LeftButton)
+    assert len(win.project.regions) == 3 and sb.list.count() == 3
+    opened = []
+    monkeypatch.setattr(mw_mod, "exec_menu", lambda m, pos: opened.append(m))
+    sb._context_menu(rect.center())
+    assert opened
+    # minimap click moves the view there
+    sb.minimap.repaint()
+    target = win._region_display_rect(win.project.regions[2]).center()
+    win.canvas.centerOn(QPointF(-50_000, -50_000))
+    sb.minimap.repaint()
+    k, off = sb.minimap._map
+    pt = QPoint(int(target.x() * k + off.x()), int(target.y() * k + off.y()))
+    QTest.mouseClick(sb.minimap, Qt.LeftButton, Qt.NoModifier, pt)
+    c = win.canvas.view_center()
+    assert abs(c.x() - target.x()) < 1 / k + 60 and abs(c.y() - target.y()) < 1 / k + 60
+    # tips cycle; × hides the sidebar, View → Sidebar brings it back
+    first = sb.tip.text()
+    sb.next_tip()
+    assert sb.tip.text() and sb.tip.text() != first
+    QTest.mouseClick(sb.close_btn, Qt.LeftButton)
+    assert not sb.isVisible() and not win.sidebar_action.isChecked()
+    win.sidebar_action.trigger()
+    assert sb.isVisible()

@@ -105,7 +105,13 @@ def stylesheet(t: Theme) -> str:
     QToolBar::separator {{ background: {t.border}; width: 1px; margin: 6px 6px; }}
     QMenuBar {{ background: {t.window}; }}
     QStatusBar {{ background: {t.window}; border-top: 1px solid {t.border}; }}
-    QDockWidget {{ titlebar-close-icon: none; }}
+    #Sidebar {{ background: {t.window}; border-right: 1px solid {t.border}; }}
+    #SidebarCard {{ background: {t.base}; border: 1px solid {t.border}; border-radius: 10px; }}
+    #SidebarTitle {{ font-weight: 600; color: {t.text}; }}
+    #SidebarTip {{ color: {t.subtext}; }}
+    #RegionList {{ background: transparent; }}
+    #Sidebar QToolButton {{ border-radius: 6px; padding: 2px; }}
+    #Sidebar QToolButton:hover {{ background: {t.hover}; }}
     """
 
 
