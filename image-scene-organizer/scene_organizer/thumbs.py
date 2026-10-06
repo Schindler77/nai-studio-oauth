@@ -99,6 +99,14 @@ class ThumbnailCache(QObject):
     def original_size(self, path: str) -> QSize | None:
         return self._orig.get(path)
 
+    def rename(self, old: str, new: str) -> None:
+        """A file was renamed/moved on disk: reuse its thumbnail under the new path."""
+        if old in self._pix:
+            self._pix[new] = self._pix.pop(old)
+        if old in self._orig:
+            self._orig[new] = self._orig.pop(old)
+        self._missing.discard(new)
+
     def invalidate(self, path: str) -> None:
         self._pix.pop(path, None)
         self._missing.discard(path)

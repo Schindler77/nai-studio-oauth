@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -201,10 +202,62 @@ def revert_rename_log(path: str) -> tuple[list[tuple[str, str]], list[str]]:
         elif os.path.exists(old) and norm_path(old) != norm_path(new):
             problems.append(f"already exists: {old}")
         else:
-            os.rename(new, old)
+            shutil.move(new, old)  # works for renames and cross-drive moves
             reverted.append((new, old))
     os.replace(path, path + ".reverted")
     return reverted, problems
+
+
+# -------------------------------------------------------------------- moving
+
+def plan_move(paths: list[str], dest_dir: str) -> list[RenameEntry]:
+    """Preview of moving files into ``dest_dir`` (names kept, never overwrites)."""
+    entries: list[RenameEntry] = []
+    seen_src: set[str] = set()
+    targets: set[str] = set()
+    for p in paths:
+        new = os.path.join(dest_dir, os.path.basename(p))
+        key = norm_path(p)
+        if key in seen_src:
+            entries.append(RenameEntry(p, new, "duplicate"))
+            continue
+        seen_src.add(key)
+        tkey = norm_path(new).lower()
+        if not os.path.exists(p):
+            status = "missing"
+        elif norm_path(os.path.dirname(p)) == norm_path(dest_dir):
+            status = "unchanged"
+        elif os.path.exists(new) or tkey in targets:
+            status = "conflict"
+        else:
+            status = "ok"
+        targets.add(tkey)
+        entries.append(RenameEntry(p, new, status))
+    return entries
+
+
+def apply_move(entries: list[RenameEntry]) -> list[tuple[str, str]]:
+    """Move the 'ok' entries; conflicts are skipped (caller shows them).
+
+    On failure, files already moved are moved back and the error re-raised.
+    """
+    done: list[tuple[str, str]] = []
+    try:
+        for e in entries:
+            if not e.will_rename:
+                continue
+            if os.path.exists(e.new):
+                raise FileExistsError(e.new)
+            shutil.move(e.old, e.new)
+            done.append((e.old, e.new))
+    except Exception:
+        for old, new in reversed(done):
+            try:
+                shutil.move(new, old)
+            except OSError:
+                pass
+        raise
+    return done
 
 
 # --------------------------------------------------------------- shell / bin

@@ -3,7 +3,7 @@ calls on the main window controller (which owns the model and undo)."""
 from __future__ import annotations
 
 
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QPainter, QPen
 from PySide6.QtWidgets import (QApplication, QGraphicsRectItem, QGraphicsScene,
                                QGraphicsView)
@@ -15,6 +15,9 @@ from .model import (PAD, TITLE_H, adjust_insert_index, cell_size, grid_cols,
 ZOOM_MIN = 0.04  # open item: canvas zoom limits
 ZOOM_MAX = 4.0
 WORLD = 1_000_000
+AUTOSCROLL_EDGE = 48     # px from the viewport edge where auto-scroll starts
+AUTOSCROLL_SPEED = 28    # max px per tick (~60 ticks/s)
+AUTOSCROLL_MODES = ("drag", "region_move", "region_resize", "rubber")
 
 
 class Canvas(QGraphicsView):
@@ -52,6 +55,10 @@ class Canvas(QGraphicsView):
         self.drag: dict | None = None
         self.rubber: QGraphicsRectItem | None = None
         self.anchor_id: str | None = None  # for shift-click ranges
+        self._last_vp = QPointF()
+        self._autoscroll = QTimer(self)
+        self._autoscroll.setInterval(16)
+        self._autoscroll.timeout.connect(self._autoscroll_tick)
 
     # ------------------------------------------------------------ settings
     def show_numbers(self) -> bool:
@@ -340,13 +347,50 @@ class Canvas(QGraphicsView):
 
     def mouseMoveEvent(self, e):
         vp = e.position()
-        sp = self.mapToScene(vp.toPoint())
+        self._last_vp = vp
         if self.mode == "pan":
             d = vp - self._last_pos
             self._last_pos = vp
             self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - int(d.x()))
             self.verticalScrollBar().setValue(self.verticalScrollBar().value() - int(d.y()))
-        elif self.mode == "press_thumb":
+        elif self.mode in ("press_thumb",) + AUTOSCROLL_MODES:
+            self._pointer_moved(vp)
+            if self.mode in AUTOSCROLL_MODES and self._edge_speed(vp) != (0, 0):
+                if not self._autoscroll.isActive():
+                    self._autoscroll.start()
+        else:
+            super().mouseMoveEvent(e)
+            return
+        e.accept()
+
+    def _edge_speed(self, vp: QPointF) -> tuple[int, int]:
+        """Scroll speed when the pointer is near/outside the viewport edge."""
+        r = self.viewport().rect()
+
+        def axis(pos: float, size: int) -> int:
+            if pos < AUTOSCROLL_EDGE:
+                return -round(AUTOSCROLL_SPEED * min(1.0, (AUTOSCROLL_EDGE - pos) / AUTOSCROLL_EDGE))
+            if pos > size - AUTOSCROLL_EDGE:
+                return round(AUTOSCROLL_SPEED * min(1.0, (pos - size + AUTOSCROLL_EDGE) / AUTOSCROLL_EDGE))
+            return 0
+        return axis(vp.x(), r.width()), axis(vp.y(), r.height())
+
+    def _autoscroll_tick(self) -> None:
+        if self.mode not in AUTOSCROLL_MODES:
+            self._autoscroll.stop()
+            return
+        dx, dy = self._edge_speed(self._last_vp)
+        if (dx, dy) == (0, 0):
+            self._autoscroll.stop()
+            return
+        h, v = self.horizontalScrollBar(), self.verticalScrollBar()
+        h.setValue(h.value() + dx)
+        v.setValue(v.value() + dy)
+        self._pointer_moved(self._last_vp)  # the pointer now covers another scene point
+
+    def _pointer_moved(self, vp: QPointF) -> None:
+        sp = self.mapToScene(vp.toPoint())
+        if self.mode == "press_thumb":
             if (vp - self._press_view).manhattanLength() >= QApplication.startDragDistance():
                 self._begin_drag()
                 if self.mode == "drag":
@@ -370,10 +414,6 @@ class Canvas(QGraphicsView):
             hit = {it.ref_id for it in self.scene().items(r, Qt.IntersectsItemBoundingRect)
                    if isinstance(it, ThumbItem) and it.isVisible() and it.parentItem() is not None}
             self.set_selection(hit | self._rubber_base)
-        else:
-            super().mouseMoveEvent(e)
-            return
-        e.accept()
 
     def mouseReleaseEvent(self, e):
         vp = e.position()

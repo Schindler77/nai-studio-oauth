@@ -111,7 +111,7 @@ class MainWindow(QMainWindow):
         a("save_region", "Save Current Region…", lambda: self.save_region(self.active_region_id))
         a("load_region", "Load Saved Region…", lambda: self.load_region())
         a("relink", "Relink Missing Images…", self.relink_missing)
-        a("revert_rename", "Revert Last Bulk Rename…", self.revert_last_rename)
+        a("revert_rename", "Revert Last File Rename/Move…", self.revert_last_rename)
         a("prefs", "Preferences…", self.preferences)
         a("quit", "Exit", self.close, QKeySequence.Quit)
 
@@ -1011,6 +1011,8 @@ class MainWindow(QMainWindow):
             m.addAction(f"Rename Actual Files by Order ({n})…", self.bulk_rename_selection)
         else:
             m.addAction("Rename Actual File…", lambda: self.rename_actual_file(ref_id))
+        m.addAction(f"Move Actual File{'s' if n > 1 else ''} to Folder ({n})…",
+                    lambda: self.move_actual_files([r.path for _, r in self.selected_refs()]))
         m.addAction("Open Source File Location", lambda: self.reveal(ref_id))
         m.addSeparator()
         m.addAction(f"Remove from Current Region ({n})", self.remove_selection)
@@ -1051,6 +1053,8 @@ class MainWindow(QMainWindow):
         m.addAction("Save Region…", lambda: self.save_region(rid))
         m.addAction("Duplicate Region", lambda: self.duplicate_region(rid))
         m.addAction("Rename Actual Files by Order…", lambda: self.bulk_rename_region(rid))
+        m.addAction("Move Actual Files of Region to Folder…",
+                    lambda: self.move_actual_files([r.path for r in reg.images]))
         m.addSeparator()
         m.addAction("Clear Region…", lambda: self.clear_region(rid))
         m.addAction("Delete Region…", lambda: self.delete_region(rid))
@@ -1124,16 +1128,16 @@ class MainWindow(QMainWindow):
         mapping = {norm_path(o): n for o, n in pairs}
         self.project.remap_paths(mapping)
         self._remap_history(mapping)
-        for o, _ in pairs:
-            self.thumbs.invalidate(o)
+        for o, n in pairs:
+            self.thumbs.rename(o, n)
         self.set_dirty()
         self.refresh()
         if self.project_path:
             self._write_project(self.project_path)
-            self.status(f"{what}; project saved so it points to the new file names", 10000)
+            self.status(f"{what}; project saved so it points to the new file paths", 10000)
         else:
             QMessageBox.information(self, what, f"{what}.\n\nThis project has never been saved. Save it now "
-                                                "so it points to the new file names.")
+                                                "so it points to the new file paths.")
             self.save_as()
 
     def rename_actual_file(self, ref_id: str):
@@ -1180,13 +1184,58 @@ class MainWindow(QMainWindow):
             fileops.write_rename_log(os.path.join(self.data_dir, "rename_logs"), pairs)
             self._after_fs_rename(pairs, f"Renamed {len(pairs)} file(s)")
 
+    def _confirm(self, title: str, text: str, ok_label: str) -> bool:
+        box = QMessageBox(QMessageBox.Warning, title, text, QMessageBox.Cancel, self)
+        ok = box.addButton(ok_label, QMessageBox.AcceptRole)
+        box.setDefaultButton(QMessageBox.Cancel)
+        box.exec()
+        return box.clickedButton() is ok
+
+    def move_actual_files(self, paths: list[str], dest: str | None = None):
+        """Move source files on disk into another folder (file names kept)."""
+        paths = list(dict.fromkeys(paths))
+        if not paths:
+            return
+        if dest is None:
+            dest = QFileDialog.getExistingDirectory(self, f"Move {len(paths)} file(s) to folder",
+                                                    self.settings.value("dirs/move", os.path.dirname(paths[0])))
+            if not dest:
+                return
+            self.settings.setValue("dirs/move", dest)
+        entries = fileops.plan_move(paths, dest)
+        ok = [e for e in entries if e.will_rename]
+        skipped = {k: [e for e in entries if e.status == k] for k in ("conflict", "missing", "unchanged")}
+        if not ok:
+            self.status("Nothing to move: " + ", ".join(f"{len(v)} {k}" for k, v in skipped.items() if v))
+            return
+        listing = "\n".join(os.path.basename(e.old) for e in ok[:12]) + ("\n…" if len(ok) > 12 else "")
+        notes = ""
+        if skipped["conflict"]:
+            notes += f"\n\n{len(skipped['conflict'])} file(s) are SKIPPED because a file with the same name " \
+                     f"already exists there (nothing is overwritten):\n" + \
+                     "\n".join(os.path.basename(e.old) for e in skipped["conflict"][:8])
+        if skipped["missing"]:
+            notes += f"\n\n{len(skipped['missing'])} missing file(s) skipped."
+        if not self._confirm("Move Actual Files",
+                             f"Move {len(ok)} file(s) on disk to\n{dest}\n\n{listing}{notes}\n\n"
+                             "Every reference in this project follows the files. "
+                             "File → Revert Last File Rename/Move undoes it.", "Move Files"):
+            return
+        try:
+            pairs = fileops.apply_move(entries)
+        except Exception as e:  # noqa: BLE001 - surface any filesystem error
+            QMessageBox.critical(self, "Move failed", f"Nothing was moved (rolled back).\n\n{e}")
+            return
+        fileops.write_rename_log(os.path.join(self.data_dir, "rename_logs"), pairs)
+        self._after_fs_rename(pairs, f"Moved {len(pairs)} file(s) to {dest}")
+
     def revert_last_rename(self):
         log = fileops.latest_rename_log(os.path.join(self.data_dir, "rename_logs"))
         if not log:
-            self.status("No rename log found")
+            self.status("No rename/move log found")
             return
-        if QMessageBox.question(self, "Revert Last Bulk Rename",
-                                f"Rename the files from\n{os.path.basename(log)}\nback to their old names?") \
+        if QMessageBox.question(self, "Revert Last File Rename/Move",
+                                f"Put the files from\n{os.path.basename(log)}\nback to their old names/folders?") \
                 != QMessageBox.Yes:
             return
         try:

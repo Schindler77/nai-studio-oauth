@@ -62,7 +62,7 @@ class BulkRenameDialog(QDialog):
         self.summary = QLabel()
         warn = QLabel("This renames the REAL files on disk (extensions are kept). The project file "
                       "is saved afterwards so it points to the new names. A rename log is written "
-                      "so the operation can be reverted (File → Revert Last Bulk Rename).")
+                      "so the operation can be reverted (File → Revert Last File Rename/Move).")
         warn.setWordWrap(True)
         warn.setStyleSheet("color:#e0a052")
         self.buttons = QDialogButtonBox(QDialogButtonBox.Cancel)

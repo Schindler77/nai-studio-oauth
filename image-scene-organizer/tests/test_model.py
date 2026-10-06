@@ -170,3 +170,37 @@ def test_expand_paths_natural_sort(tmp_path):
     _files(tmp_path, ["img10.png", "img2.png", "img1.png", "notes.txt"])
     got = [os.path.basename(p) for p in fileops.expand_paths([str(tmp_path)])]
     assert got == ["img1.png", "img2.png", "img10.png"]
+
+
+def test_move_plan_and_apply(tmp_path):
+    a, b, c = _files(tmp_path, ["a.png", "b.png", "c.png"])
+    dest = tmp_path / "scene1"
+    dest.mkdir()
+    (dest / "c.png").write_bytes(b"other")
+    plan = fileops.plan_move([a, b, c, a, str(tmp_path / "gone.png")], str(dest))
+    assert [e.status for e in plan] == ["ok", "ok", "conflict", "duplicate", "missing"]
+    pairs = fileops.apply_move(plan)
+    assert len(pairs) == 2 and (dest / "a.png").read_bytes() == b"a.png"
+    assert (dest / "c.png").read_bytes() == b"other" and os.path.exists(c)  # nothing overwritten
+    log = fileops.write_rename_log(str(tmp_path / "logs"), pairs)
+    reverted, problems = fileops.revert_rename_log(log)
+    assert not problems and os.path.exists(a) and os.path.exists(b)
+
+
+def test_move_rolls_back_on_failure(tmp_path, monkeypatch):
+    a, b = _files(tmp_path, ["a.png", "b.png"])
+    dest = tmp_path / "d"
+    dest.mkdir()
+    plan = fileops.plan_move([a, b], str(dest))
+    real = fileops.shutil.move
+    calls = []
+
+    def flaky(src, dst):
+        calls.append(src)
+        if len(calls) == 2:
+            raise PermissionError("locked by another program")
+        return real(src, dst)
+    monkeypatch.setattr(fileops.shutil, "move", flaky)
+    with pytest.raises(PermissionError):
+        fileops.apply_move(plan)
+    assert os.path.exists(a) and os.path.exists(b)  # first move was undone

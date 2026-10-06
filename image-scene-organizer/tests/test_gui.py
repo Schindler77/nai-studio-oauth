@@ -70,6 +70,8 @@ def win(qapp, tmp_path, monkeypatch):
     w = MainWindow()
     w.resize(1400, 900)
     w.show()
+    w.activateWindow()  # window shortcuts need an active window on real platforms
+    QTest.qWaitForWindowActive(w, 3000)
     pump(100)
     yield w
     w.dirty = False
@@ -398,3 +400,59 @@ def test_autosave_and_crash_recovery(qapp, tmp_path, monkeypatch):
     w2.close()
     assert not os.path.exists(w2.lock_path())
     shutil.rmtree(w2.data_dir, ignore_errors=True)
+
+
+def test_move_actual_files_updates_project(win, tmp_path, monkeypatch):
+    paths = make_images(str(tmp_path / "src"), 3)
+    dest = tmp_path / "Battle"
+    dest.mkdir()
+    win.new_region()
+    reg = win.project.regions[0]
+    win.import_paths([str(tmp_path / "src")])
+    win.copy_selection()  # clipboard must follow the move too
+    proj = str(tmp_path / "p.isproj")
+    win._write_project(proj)
+    monkeypatch.setattr(MainWindow, "_confirm", lambda self, *a: True)
+    win.move_actual_files([r.path for r in reg.images[:2]], str(dest))
+    assert [os.path.dirname(r.path) for r in reg.images] == [str(dest), str(dest), str(tmp_path / "src")]
+    assert all(os.path.exists(r.path) for r in reg.images) and not os.path.exists(paths[0])
+    assert not win.dirty  # saved so the project points to the new locations
+    assert os.path.dirname(win.clipboard["items"][0]["path"]) == str(dest)
+    win.undo()  # undoing the import must not resurrect old paths
+    win.redo()
+    assert os.path.dirname(win.project.regions[0].images[0].path) == str(dest)
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
+    win.revert_last_rename()
+    assert all(os.path.exists(p) for p in paths)
+    assert [r.path for r in win.project.regions[0].images] == paths
+
+
+def test_autoscroll_while_dragging(win, tmp_path):
+    make_images(str(tmp_path / "a"), 3)
+    win.new_region()
+    reg = win.project.regions[0]
+    win.import_paths([str(tmp_path / "a")])
+    win.canvas.set_zoom(1.0, win._region_display_rect(reg).center())
+    win.canvas.clear_selection()
+    pump()
+    vp = win.canvas.viewport()
+    start = view_pos(win, reg.images[0].id)
+    edge = QPoint(vp.width() - 5, start.y())
+    h0 = win.canvas.horizontalScrollBar().value()
+    send_mouse(vp, QMouseEvent.MouseButtonPress, start)
+    send_mouse(vp, QMouseEvent.MouseMove, start + QPoint(20, 0), Qt.NoButton, Qt.LeftButton)
+    send_mouse(vp, QMouseEvent.MouseMove, edge, Qt.NoButton, Qt.LeftButton)
+    ti = win.canvas.thumb_items[reg.images[0].id]
+    x_before = ti.scenePos().x()
+    pump(300)
+    assert win.canvas.horizontalScrollBar().value() > h0 + 50
+    assert ti.scenePos().x() > x_before + 50  # the dragged image travels with the view
+    send_mouse(vp, QMouseEvent.MouseMove, vp.rect().center(), Qt.NoButton, Qt.LeftButton)
+    pump(60)
+    h1 = win.canvas.horizontalScrollBar().value()
+    pump(100)
+    assert win.canvas.horizontalScrollBar().value() == h1  # stops away from the edge
+    send_mouse(vp, QMouseEvent.MouseButtonPress, vp.rect().center(), Qt.RightButton, Qt.LeftButton | Qt.RightButton)
+    send_mouse(vp, QMouseEvent.MouseButtonRelease, vp.rect().center(), Qt.RightButton, Qt.LeftButton)
+    send_mouse(vp, QMouseEvent.MouseButtonRelease, vp.rect().center(), Qt.LeftButton, Qt.NoButton)
+    assert win.canvas.mode is None and len(reg.images) == 3
