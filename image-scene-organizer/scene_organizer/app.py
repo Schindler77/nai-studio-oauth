@@ -6,32 +6,24 @@ import sys
 import time
 import traceback
 
-from PySide6.QtCore import QStandardPaths, Qt
-from PySide6.QtGui import QColor, QImageReader, QPalette
+from PySide6.QtCore import QLibraryInfo, QLocale, QSettings, QStandardPaths, QTranslator
+from PySide6.QtGui import QImageReader
 from PySide6.QtWidgets import QApplication, QMessageBox
 
+from . import i18n, theme
+from .i18n import tr
 from .mainwindow import APP_NAME, MainWindow
 
 
-def _dark_palette(app: QApplication) -> None:
+def apply_appearance(app: QApplication) -> None:
+    """Fusion style + saved theme (default light) + bundled Pretendard font."""
     app.setStyle("Fusion")
-    p = QPalette()
-    base, alt, text = QColor("#232428"), QColor("#2b2d31"), QColor("#e6e6e6")
-    p.setColor(QPalette.Window, alt)
-    p.setColor(QPalette.WindowText, text)
-    p.setColor(QPalette.Base, base)
-    p.setColor(QPalette.AlternateBase, alt)
-    p.setColor(QPalette.ToolTipBase, QColor("#333"))
-    p.setColor(QPalette.ToolTipText, text)
-    p.setColor(QPalette.Text, text)
-    p.setColor(QPalette.Button, alt)
-    p.setColor(QPalette.ButtonText, text)
-    p.setColor(QPalette.Highlight, QColor("#2f7fb8"))
-    p.setColor(QPalette.HighlightedText, Qt.white)
-    p.setColor(QPalette.Disabled, QPalette.Text, QColor("#777"))
-    p.setColor(QPalette.Disabled, QPalette.ButtonText, QColor("#777"))
-    p.setColor(QPalette.Disabled, QPalette.WindowText, QColor("#777"))
-    app.setPalette(p)
+    family = theme.load_fonts()
+    if family:
+        app.setFont(theme.ui_font(family))
+    t = theme.set_theme(str(QSettings().value("ui/theme", theme.DEFAULT_THEME)))
+    app.setPalette(theme.palette(t))
+    app.setStyleSheet(theme.stylesheet(t))
 
 
 def _install_excepthook() -> None:
@@ -49,12 +41,23 @@ def _install_excepthook() -> None:
                 f.write(f"\n--- {time.strftime('%Y-%m-%d %H:%M:%S')}\n{text}")
         except OSError:
             pass
-        QMessageBox.critical(None, "Unexpected error",
-                             f"{etype.__name__}: {value}\n\nDetails were written to\n"
-                             f"{os.path.join(log_dir, 'error.log')}\n\n"
-                             "Your project is still open - save it with File → Save As.")
+        QMessageBox.critical(None, tr("Unexpected error"),
+                             tr("{etype}: {value}\n\nDetails were written to\n{log}\n\nYour project is still open - "
+                                "save it with File → Save As.", etype=etype.__name__, value=value,
+                                log=os.path.join(log_dir, "error.log")))
 
     sys.excepthook = hook
+
+
+def _apply_language(app: QApplication) -> None:
+    """UI language from the settings (default Korean) + Qt's own dialog texts."""
+    lang = QSettings().value("ui/language", i18n.DEFAULT_LANGUAGE)
+    i18n.set_language(str(lang))
+    if i18n.language() == "ko":
+        QLocale.setDefault(QLocale(QLocale.Korean, QLocale.SouthKorea))
+        qt_tr = QTranslator(app)
+        if qt_tr.load("qtbase_ko", QLibraryInfo.path(QLibraryInfo.TranslationsPath)):
+            app.installTranslator(qt_tr)  # Save / Cancel / Yes / No, file dialogs
 
 
 def _self_test(app: QApplication, out_dir: str) -> int:
@@ -86,7 +89,8 @@ def main(argv: list[str] | None = None) -> int:
     app.setApplicationName("ImageSceneOrganizer")
     app.setApplicationDisplayName(APP_NAME)
     QImageReader.setAllocationLimit(2048)  # MB; allow very large source images in the viewer
-    _dark_palette(app)
+    apply_appearance(app)
+    _apply_language(app)
     if self_test:
         return _self_test(app, os.path.abspath(self_test))
     _install_excepthook()

@@ -20,14 +20,19 @@ REGION_EXT = ".isregion"
 
 # Canvas layout constants (scene units). Shared by the model (free-mode
 # placement of new images) and the canvas (drawing / hit testing).
-TITLE_H = 30
+TITLE_H = 44
 PAD = 12
 GAP = 10
-LABEL_H = 18
+LABEL_H = 20
 
 THUMB_MIN = 48
 THUMB_MAX = 320
 THUMB_DEFAULT = 150
+
+# Thumbnail cell shape. thumb_size is the longer edge of the image box.
+ASPECTS = {"16:9": 16 / 9, "4:3": 4 / 3, "1:1": 1.0, "3:4": 3 / 4, "2:3": 2 / 3}
+ASPECT_DEFAULT = "16:9"
+FILLS = ("cover", "fit")  # cover = crop to fill the box, fit = whole image (letterbox)
 
 PRESET_COLORS = [
     ("Red", "#e05252"),
@@ -48,8 +53,19 @@ def new_id() -> str:
 
 # ---------------------------------------------------------------- layout math
 
-def cell_size(thumb: int, show_labels: bool) -> tuple[int, int]:
-    return thumb, thumb + (LABEL_H if show_labels else 0)
+def image_box(thumb: int, aspect: str) -> tuple[int, int]:
+    a = ASPECTS.get(aspect, ASPECTS[ASPECT_DEFAULT])
+    return (thumb, round(thumb / a)) if a >= 1 else (round(thumb * a), thumb)
+
+
+def cell_size(thumb: int, aspect: str = ASPECT_DEFAULT, label: bool = True) -> tuple[int, int]:
+    w, h = image_box(thumb, aspect)
+    return w, h + (LABEL_H if label else 0)
+
+
+def closest_aspect(ratio: float) -> str:
+    """Preset whose width/height ratio is closest (in log space) to ``ratio``."""
+    return min(ASPECTS, key=lambda k: abs(math.log(ASPECTS[k]) - math.log(max(ratio, 1e-3))))
 
 
 def grid_cols(region_w: float, cw: float) -> int:
@@ -74,9 +90,9 @@ def slot_at(x: float, y: float, cols: int, cw: float, ch: float, n: int) -> int:
     return min(max(row * cols + col, 0), n)
 
 
-def default_region_size(thumb: int, show_labels: bool) -> tuple[float, float]:
-    cw, ch = cell_size(thumb, show_labels)
-    return 2 * PAD + 5 * cw + 4 * GAP, TITLE_H + 2 * PAD + 1.4 * ch
+def default_region_size(cw: float, ch: float) -> tuple[float, float]:
+    cols = 6 if cw < 130 else 5
+    return 2 * PAD + cols * cw + (cols - 1) * GAP, TITLE_H + 2 * PAD + 1.4 * ch
 
 
 # --------------------------------------------------------------- lock policy
@@ -154,6 +170,8 @@ class Region:
     collapsed: bool = False
     images: list[ImageRef] = field(default_factory=list)
     id: str = field(default_factory=new_id)
+    scroll_enabled: bool = False  # open item (spec §38): fixed height + scroll inside the region
+    scroll: float = 0.0
 
     # -- queries
     def index_of(self, ref_id: str) -> int:
@@ -217,6 +235,7 @@ class Region:
                 "x": round(self.x, 2), "y": round(self.y, 2),
                 "w": round(self.w, 2), "h": round(self.h, 2),
                 "auto_arrange": self.auto_arrange, "collapsed": self.collapsed,
+                "scroll_enabled": self.scroll_enabled, "scroll": round(self.scroll, 1),
                 "images": [r.to_dict(base_dir) for r in self.images]}
 
     @classmethod
@@ -228,6 +247,8 @@ class Region:
                   [ImageRef.from_dict(i, base_dir, new_ids) for i in d.get("images", [])])
         if not new_ids and d.get("id"):
             reg.id = d["id"]
+        reg.scroll_enabled = bool(d.get("scroll_enabled", False))
+        reg.scroll = float(d.get("scroll", 0.0))
         return reg
 
 
@@ -235,10 +256,22 @@ class Region:
 class Project:
     regions: list[Region] = field(default_factory=list)
     thumb_size: int = THUMB_DEFAULT
-    show_labels: bool = True
-    show_numbers: bool = True
+    show_labels: bool = False   # file / display name under the thumbnail
+    show_numbers: bool = True   # sequence number under the thumbnail
     show_region_names: bool = True
     view: dict = field(default_factory=dict)  # {"cx","cy","zoom"}
+    thumb_aspect: str = ASPECT_DEFAULT
+    thumb_fill: str = "cover"
+    aspect_auto: bool = True  # pick the aspect from the first imported images
+
+    def label_shown(self) -> bool:
+        return self.show_numbers or self.show_labels
+
+    def cell(self) -> tuple[int, int]:
+        return cell_size(self.thumb_size, self.thumb_aspect, self.label_shown())
+
+    def image_box(self) -> tuple[int, int]:
+        return image_box(self.thumb_size, self.thumb_aspect)
 
     def region(self, region_id: str | None) -> Region | None:
         for r in self.regions:
@@ -289,16 +322,22 @@ class Project:
                 "thumb_size": self.thumb_size, "show_labels": self.show_labels,
                 "show_numbers": self.show_numbers,
                 "show_region_names": self.show_region_names, "view": dict(self.view),
+                "thumb_aspect": self.thumb_aspect, "thumb_fill": self.thumb_fill,
+                "aspect_auto": self.aspect_auto,
                 "regions": [r.to_dict(base_dir) for r in self.regions]}
 
     @classmethod
     def from_dict(cls, d: dict, base_dir: str | None = None) -> "Project":
         if d.get("format") not in (None, "image-scene-organizer-project"):
             raise ValueError("Not an Image Scene Organizer project file")
+        # Files from before thumbnail shapes existed keep their look: square, whole image.
+        aspect = d.get("thumb_aspect", "1:1")
+        fill = d.get("thumb_fill", "fit")
         return cls([Region.from_dict(r, base_dir) for r in d.get("regions", [])],
                    int(d.get("thumb_size", THUMB_DEFAULT)), bool(d.get("show_labels", True)),
                    bool(d.get("show_numbers", True)), bool(d.get("show_region_names", True)),
-                   dict(d.get("view", {})))
+                   dict(d.get("view", {})), aspect if aspect in ASPECTS else ASPECT_DEFAULT,
+                   fill if fill in FILLS else "cover", bool(d.get("aspect_auto", False)))
 
 
 # ------------------------------------------------------- reusable region file

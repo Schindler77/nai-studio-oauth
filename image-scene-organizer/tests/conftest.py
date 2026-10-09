@@ -16,3 +16,17 @@ def qapp():
     app.setOrganizationName("ImageSceneOrganizerTest")
     app.setApplicationName("ImageSceneOrganizerTest")
     return app
+
+
+@pytest.fixture(autouse=True)
+def _ui_language():
+    """Tests run in English unless they ask for another language; a Korean
+    run must not hit a single untranslated string."""
+    from scene_organizer import i18n
+    i18n.set_language("en")
+    i18n.MISSES.clear()
+    yield
+    lang = i18n.language()
+    i18n.set_language("en")
+    if lang == "ko":
+        assert not i18n.MISSES, f"untranslated: {sorted(i18n.MISSES)}"

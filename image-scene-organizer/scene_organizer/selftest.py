@@ -13,11 +13,11 @@ import tempfile
 import time
 import traceback
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QLibraryInfo, Qt, QTranslator
 from PySide6.QtGui import QColor, QImage, QImageReader, QPainter
 from PySide6.QtWidgets import QApplication
 
-from . import fileops
+from . import fileops, i18n, theme
 from .model import Project, load_json, region_file_dict, region_from_file_dict, save_json_atomic
 
 NEEDED_FORMATS = {"png", "jpg", "jpeg", "webp", "bmp", "gif", "tif", "tiff"}
@@ -62,6 +62,18 @@ def run(out_dir: str) -> int:
         fmts = {bytes(f).decode() for f in QImageReader.supportedImageFormats()}
         missing = sorted(NEEDED_FORMATS - fmts)
         check("image format plugins bundled", not missing, f"missing: {missing}" if missing else "")
+
+        qt_ko = QTranslator()
+        check("Korean Qt dialog translations bundled",
+              qt_ko.load("qtbase_ko", QLibraryInfo.path(QLibraryInfo.TranslationsPath)))
+        from PySide6.QtGui import QFontDatabase
+
+        from .icons import icon
+        check("Pretendard font bundled", theme.FONT_FAMILY in QFontDatabase.families())
+        check("toolbar icons bundled", not icon("save", "#000000").isNull())
+        check("light theme is the default", theme.current().name == "light")
+        check("Korean UI is the default", i18n.language() == "ko" and i18n.tr("Save") == "저장",
+              f"language={i18n.language()}")
 
         src = os.path.join(work, "shots")
         os.makedirs(src)

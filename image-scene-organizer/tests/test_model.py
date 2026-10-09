@@ -204,3 +204,17 @@ def test_move_rolls_back_on_failure(tmp_path, monkeypatch):
     with pytest.raises(PermissionError):
         fileops.apply_move(plan)
     assert os.path.exists(a) and os.path.exists(b)  # first move was undone
+
+
+def test_thumbnail_shapes_and_legacy_projects():
+    from scene_organizer.model import ASPECT_DEFAULT, cell_size, closest_aspect
+    assert closest_aspect(832 / 1216) == "2:3" and closest_aspect(1920 / 1080) == "16:9"
+    assert closest_aspect(1.0) == "1:1"
+    assert cell_size(160, "16:9", label=False) == (160, 90)
+    assert cell_size(150, "2:3", label=False) == (100, 150)
+    new = Project()
+    assert new.thumb_aspect == ASPECT_DEFAULT and new.aspect_auto
+    legacy = Project.from_dict({"regions": [], "thumb_size": 150})  # saved before shapes existed
+    assert (legacy.thumb_aspect, legacy.thumb_fill, legacy.aspect_auto) == ("1:1", "fit", False)
+    again = Project.from_dict(Project(thumb_aspect="3:4", thumb_fill="cover").to_dict())
+    assert (again.thumb_aspect, again.thumb_fill) == ("3:4", "cover")
