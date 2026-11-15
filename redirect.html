@@ -64,6 +64,8 @@
       const card = document.getElementById('card');
       const params = new URLSearchParams(window.location.search);
       const code = params.get('code');
+      const states = params.getAll('state');
+      const state = states.length === 1 && /^[A-Za-z0-9_-]{43}$/.test(states[0]) ? states[0] : null;
       const error = params.get('error');
 
       function showSuccess() {
@@ -95,12 +97,20 @@
         return;
       }
 
+      // 신규 state 인증은 유효한 1개 값과 원래 팝업 연결을 요구합니다.
+      // 실패 시 code를 표시하거나 부모 창으로 전송하지 않습니다.
+      if (states.length > 0 && (!state || !window.opener)) {
+        showError('인증 창 연결을 확인할 수 없습니다.');
+        return;
+      }
+
       // 부모 창에 메시지 전송
       if (window.opener) {
         try {
           window.opener.postMessage({
             type: 'NAI_STUDIO_GOOGLE_AUTH',
-            code: code
+            code: code,
+            ...(state ? { state } : {})
           }, '*');
           showSuccess();
         } catch (e) {
